@@ -1,11 +1,16 @@
-[package]
-name = "stellarvault_contracts"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+resolver = "2"
+members = [
+    "property-registry",
+    "mortgage-pool",
+    "build-escrow",
+]
 
-[lib]
-crate-type = ["cdylib"]
-path = "src/lib.rs"
-
-[dependencies]
-soroban-sdk = "26.0.1"
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = false
+strip = true
+lto = true
+panic = "abort"
+codegen-units = 1
