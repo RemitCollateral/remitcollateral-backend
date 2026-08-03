@@ -3,14 +3,56 @@ resolver = "2"
 members = [
     "property-registry",
     "mortgage-pool",
-    "build-escrow",
 ]
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+# Single source of truth for the SDK version. Keeping it here guarantees every
+# contract resolves to one copy of soroban-sdk, so cargo's feature unification is
+# something we choose rather than something that happens to us. The SDK ships no
+# default features today; pinning `default-features = false` keeps it that way if
+# a future release adds one, so nothing lands in the deployed wasm implicitly.
+[workspace.dependencies]
+soroban-sdk = { version = "26.0.1", default-features = false }
+
+# Profile used for the wasm that actually gets uploaded. Every knob is chosen for
+# size or on-chain resource cost:
+#
+#   opt-level = "s"     measured smaller than "z" for both contracts. "z" also
+#                       disables loop vectorization, which here only traded a few
+#                       bytes of code for extra call overhead. Re-check with
+#                       `make size` before changing it.
+#   lto = "fat"         whole-program inlining and dead-code elimination across
+#                       the soroban-sdk boundary; this is where most of the
+#                       unused SDK surface disappears.
+#   codegen-units = 1   no duplicated code across units, and the best possible
+#                       input for fat LTO.
+#   panic = "abort"     no unwind tables or landing pads. The host traps on panic
+#                       regardless, so unwinding is pure dead weight.
+#   strip = "symbols"   drops the `name` custom section from the artifact.
+#   debug-assertions    off, which is what makes `log!` and `debug_assert!`
+#                       compile out to nothing rather than emitting host calls.
+#   overflow-checks     deliberately left ON. These contracts move funds; a
+#                       silent wrap is far more expensive than the few hundred
+#                       bytes the checks cost.
 [profile.release]
-opt-level = "z"
-overflow-checks = true
-debug = false
-strip = true
-lto = true
-panic = "abort"
+opt-level = "s"
+lto = "fat"
 codegen-units = 1
+panic = "abort"
+strip = "symbols"
+debug = false
+debug-assertions = false
+overflow-checks = true
+incremental = false
+rpath = false
+
+# Identical to `release` except that `log!` output survives. For local debugging
+# against a quickstart/testnet node only -- never upload the wasm this produces,
+# it is larger and pays host cost for every log statement.
+[profile.release-with-logs]
+inherits = "release"
+debug-assertions = true

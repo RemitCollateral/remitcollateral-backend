@@ -1,0 +1,11 @@
+# Flags applied only when building for the Soroban wasm target, so host-side
+# `cargo test` builds are untouched.
+[target.wasm32v1-none]
+rustflags = [
+    # rust-lld reserves a 1 MiB shadow stack by default, which forces the module
+    # to declare 17 initial memory pages (~1.09 MiB) that the host must allocate
+    # on every invocation. These contracts are shallow -- no recursion, no large
+    # stack temporaries -- so 64 KiB is generous and drops the declared memory to
+    # 2 pages (128 KiB). Pure RAM-footprint win, no code change required.
+    "-C", "link-arg=-zstack-size=65536",
+]

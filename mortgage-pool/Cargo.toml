@@ -1,12 +1,16 @@
 [package]
 name = "mortgage-pool"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [lib]
 crate-type = ["cdylib"]
+doctest = false
 
 [dependencies]
-soroban-sdk = "26.0.1"
-# We can use a contractimport or define the interface of PropertyRegistry to call it.
-# We will define a simple interface for PropertyRegistry in the code.
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+# See property-registry/Cargo.toml -- testutils stays out of the deployed wasm.
+soroban-sdk = { workspace = true, features = ["testutils"] }

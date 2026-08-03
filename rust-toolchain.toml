@@ -1,0 +1,8 @@
+# Pinned so the uploaded wasm is reproducible: a different rustc version emits
+# different code, which changes the contract hash even when the source has not
+# moved. Bump deliberately and re-run `make size` when you do.
+[toolchain]
+channel = "1.96.0"
+targets = ["wasm32v1-none"]
+profile = "minimal"
+components = ["rustfmt", "clippy"]
