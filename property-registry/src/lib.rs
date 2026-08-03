@@ -24,7 +24,14 @@ pub enum Error {
     NotVerified = 5,
     NotValued = 6,
     NotTokenized = 7,
+    NoPendingAdmin = 8,
 }
+
+// Bumped by hand whenever this contract's wasm is cut for release. `version()`
+// is how an operator confirms which executable a deployed instance is actually
+// running after an upgrade -- the code hash alone does not tell you that at a
+// glance.
+pub const CONTRACT_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -53,6 +60,7 @@ pub struct PropertyInfo {
 #[contracttype(export = false)]
 pub enum DataKey {
     Admin,
+    PendingAdmin,
     PropertyCount,
     Property(u64),
 }
@@ -99,6 +107,31 @@ pub struct Tokenized {
     #[topic]
     pub property_id: u64,
     pub token_address: Address,
+}
+
+#[contractevent(data_format = "single-value", export = false)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Upgraded {
+    // The version being replaced. The incoming wasm reports its own.
+    #[topic]
+    pub from_version: u32,
+    pub new_wasm_hash: BytesN<32>,
+}
+
+#[contractevent(data_format = "single-value", export = false)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminReq {
+    #[topic]
+    pub current_admin: Address,
+    pub pending_admin: Address,
+}
+
+#[contractevent(data_format = "single-value", export = false)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminSet {
+    #[topic]
+    pub admin: Address,
+    pub previous_admin: Address,
 }
 
 #[contract]
@@ -152,6 +185,80 @@ impl PropertyRegistry {
 
     pub fn get_admin(env: Env) -> Address {
         Self::admin(&env)
+    }
+
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
+    // Replace this contract's executable, preserving all ledger state.
+    //
+    // `require_auth()` is the whole authorisation model here: it binds the
+    // admin's signature to *this* invocation with *these* arguments, so an
+    // authorisation to upgrade to one wasm hash cannot be replayed to install a
+    // different one. Nothing else needs checking.
+    //
+    // The swap takes effect only once this invocation finishes successfully.
+    // Instance and persistent entries are untouched, so the incoming wasm must
+    // read the same storage layout -- see UPGRADING.md.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        Self::require_admin(&env);
+
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        Upgraded {
+            from_version: CONTRACT_VERSION,
+            new_wasm_hash,
+        }
+        .publish(&env);
+    }
+
+    // Admin handover is two-step on purpose. `upgrade` is the only way to fix a
+    // mistake in deployed code, and it is gated on the admin, so setting the
+    // admin to an address nobody can sign for would freeze this contract at its
+    // current executable permanently. Requiring the incoming admin to accept
+    // proves the key works before the old one gives it up.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        Self::require_admin(&env);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+
+        AdminReq {
+            current_admin: Self::admin(&env),
+            pending_admin: new_admin,
+        }
+        .publish(&env);
+    }
+
+    pub fn accept_admin(env: Env) {
+        let storage = env.storage().instance();
+        let pending: Address = match storage.get(&DataKey::PendingAdmin) {
+            Some(pending) => pending,
+            None => panic_with_error!(&env, Error::NoPendingAdmin),
+        };
+        pending.require_auth();
+
+        let previous_admin = Self::admin(&env);
+        storage.set(&DataKey::Admin, &pending);
+        storage.remove(&DataKey::PendingAdmin);
+
+        AdminSet {
+            admin: pending,
+            previous_admin,
+        }
+        .publish(&env);
+    }
+
+    pub fn cancel_admin_proposal(env: Env) {
+        Self::require_admin(&env);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+    }
+
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     pub fn submit_property(

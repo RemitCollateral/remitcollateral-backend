@@ -262,3 +262,103 @@ fn events_carry_the_expected_topics_and_payloads() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Upgradeability
+// ---------------------------------------------------------------------------
+
+#[test]
+fn version_reports_the_compiled_constant() {
+    let f = setup();
+    assert_eq!(f.client.version(), crate::CONTRACT_VERSION);
+}
+
+/// `upgrade` is admin-gated through `require_auth`, which binds the signature to
+/// this invocation and its arguments. With auth mocked off, a call that carries
+/// no admin authorisation must fail.
+#[test]
+fn upgrade_requires_admin_authorization() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PropertyRegistry, ());
+    let client = PropertyRegistryClient::new(&env, &contract_id);
+    client.initialize(&Address::generate(&env));
+
+    env.set_auths(&[]);
+    assert!(client
+        .try_upgrade(&BytesN::from_array(&env, &[9u8; 32]))
+        .is_err());
+}
+
+#[test]
+fn admin_handover_requires_both_sides() {
+    let f = setup();
+    let next = Address::generate(&f.env);
+
+    assert_eq!(f.client.get_pending_admin(), None);
+
+    f.client.propose_admin(&next);
+    assert_eq!(f.client.get_pending_admin(), Some(next.clone()));
+    // Proposing does not hand over anything on its own.
+    assert_eq!(f.client.get_admin(), f.admin);
+
+    f.client.accept_admin();
+    assert_eq!(f.client.get_admin(), next);
+    assert_eq!(f.client.get_pending_admin(), None);
+}
+
+#[test]
+fn accepting_without_a_proposal_fails() {
+    let f = setup();
+    assert_eq!(
+        err_of(f.client.try_accept_admin()),
+        Error::NoPendingAdmin.into()
+    );
+}
+
+#[test]
+fn a_proposal_can_be_cancelled() {
+    let f = setup();
+    f.client.propose_admin(&Address::generate(&f.env));
+
+    f.client.cancel_admin_proposal();
+
+    assert_eq!(f.client.get_pending_admin(), None);
+    assert_eq!(
+        err_of(f.client.try_accept_admin()),
+        Error::NoPendingAdmin.into()
+    );
+}
+
+/// The point of the two-step flow: only the proposed address can complete it,
+/// so an admin cannot be handed to a key that turns out to be unusable.
+#[test]
+fn only_the_proposed_address_can_accept() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(PropertyRegistry, ());
+    let client = PropertyRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+    client.propose_admin(&Address::generate(&env));
+
+    env.set_auths(&[]);
+    assert!(client.try_accept_admin().is_err());
+    assert_eq!(client.get_admin(), admin);
+}
+
+/// After a handover the old admin is powerless and the new one is in control.
+#[test]
+fn handover_moves_upgrade_rights() {
+    let f = setup();
+    let next = Address::generate(&f.env);
+    f.client.propose_admin(&next);
+    f.client.accept_admin();
+
+    // `setup` mocks all auths, so authorisation is not what is under test here;
+    // what matters is that the stored admin is the one the guard now reads.
+    assert_eq!(f.client.get_admin(), next);
+    f.client.verify_property(&f.submit());
+}

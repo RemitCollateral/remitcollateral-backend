@@ -501,3 +501,76 @@ fn events_carry_the_expected_topics_and_payloads() {
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Upgradeability
+// ---------------------------------------------------------------------------
+
+#[test]
+fn version_reports_the_compiled_constant() {
+    let f = setup();
+    assert_eq!(f.pool.version(), crate::CONTRACT_VERSION);
+}
+
+#[test]
+fn upgrade_requires_admin_authorization() {
+    let f = setup();
+    f.env.set_auths(&[]);
+    assert!(f
+        .pool
+        .try_upgrade(&BytesN::from_array(&f.env, &[9u8; 32]))
+        .is_err());
+}
+
+/// The admin lives inside `Config`; a handover has to rewrite it without
+/// disturbing the three token/registry addresses alongside it.
+#[test]
+fn admin_handover_preserves_the_rest_of_config() {
+    let f = setup();
+    let next = Address::generate(&f.env);
+
+    f.pool.propose_admin(&next);
+    assert_eq!(f.pool.get_pending_admin(), Some(next.clone()));
+    assert_eq!(f.pool.get_admin(), f.admin);
+
+    f.pool.accept_admin();
+
+    assert_eq!(f.pool.get_admin(), next);
+    assert_eq!(f.pool.get_pending_admin(), None);
+    assert_eq!(f.pool.get_usdc_token(), f.usdc);
+    assert_eq!(f.pool.get_pool_token(), f.pool_token);
+    assert_eq!(f.pool.get_property_registry(), f.registry.address);
+}
+
+#[test]
+fn accepting_without_a_proposal_fails() {
+    let f = setup();
+    assert_eq!(
+        err_of(f.pool.try_accept_admin()),
+        Error::NoPendingAdmin.into()
+    );
+}
+
+#[test]
+fn a_proposal_can_be_cancelled() {
+    let f = setup();
+    f.pool.propose_admin(&Address::generate(&f.env));
+
+    f.pool.cancel_admin_proposal();
+
+    assert_eq!(f.pool.get_pending_admin(), None);
+    assert_eq!(
+        err_of(f.pool.try_accept_admin()),
+        Error::NoPendingAdmin.into()
+    );
+}
+
+#[test]
+fn only_the_proposed_address_can_accept() {
+    let f = setup();
+    f.pool.propose_admin(&Address::generate(&f.env));
+
+    f.env.set_auths(&[]);
+    assert!(f.pool.try_accept_admin().is_err());
+    assert_eq!(f.pool.get_admin(), f.admin);
+}

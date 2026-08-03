@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
-    panic_with_error, token, Address, Env,
+    panic_with_error, token, Address, BytesN, Env,
 };
 
 // The slice of PropertyRegistry this pool actually calls.
@@ -33,6 +33,9 @@ const STATUS_MORTGAGED: u32 = 3;
 const STATUS_REPAID: u32 = 4;
 const STATUS_DEFAULTED: u32 = 5;
 
+// See the note on property-registry's CONTRACT_VERSION.
+pub const CONTRACT_VERSION: u32 = 1;
+
 const INTEREST_RATE_BPS: u32 = 800; // 8%
 const BPS_DENOMINATOR: u128 = 10_000;
 const MAX_LTV_PCT: u128 = 70;
@@ -51,6 +54,7 @@ pub enum Error {
     NoCollateral = 6,
     LtvExceeded = 7,
     AmountOverflow = 8,
+    NoPendingAdmin = 9,
 }
 
 #[contracttype]
@@ -93,6 +97,11 @@ pub struct Config {
 #[contracttype(export = false)]
 pub enum DataKey {
     Config,
+    // Deliberately its own key rather than a field on `Config`. A pending
+    // handover is short-lived state, and keeping `Config`'s serialised shape
+    // stable matters more than usual in a contract whose whole point is that
+    // the code can be swapped out from under its storage.
+    PendingAdmin,
     Loan(u64),       // property_id -> LoanInfo
     Collateral(u64), // property_id -> collateral amount, until the loan absorbs it
 }
@@ -150,6 +159,30 @@ pub struct Liquidate {
     pub property_id: u64,
     pub liquidator: Address,
     pub remaining_debt: u128,
+}
+
+#[contractevent(data_format = "single-value", export = false)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Upgraded {
+    #[topic]
+    pub from_version: u32,
+    pub new_wasm_hash: BytesN<32>,
+}
+
+#[contractevent(data_format = "single-value", export = false)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminReq {
+    #[topic]
+    pub current_admin: Address,
+    pub pending_admin: Address,
+}
+
+#[contractevent(data_format = "single-value", export = false)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminSet {
+    #[topic]
+    pub admin: Address,
+    pub previous_admin: Address,
 }
 
 #[contract]
@@ -226,6 +259,73 @@ impl MortgagePool {
 
     pub fn get_property_registry(env: Env) -> Address {
         Self::config(&env).property_registry
+    }
+
+    pub fn version(_env: Env) -> u32 {
+        CONTRACT_VERSION
+    }
+
+    // Replace this contract's executable, preserving all ledger state. See the
+    // equivalent function in property-registry for why `require_auth()` is the
+    // entire authorisation model, and UPGRADING.md for the storage-layout rules
+    // the incoming wasm has to respect.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        Self::config(&env).admin.require_auth();
+
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+
+        Upgraded {
+            from_version: CONTRACT_VERSION,
+            new_wasm_hash,
+        }
+        .publish(&env);
+    }
+
+    // Two-step handover; see the note in property-registry.
+    pub fn propose_admin(env: Env, new_admin: Address) {
+        let config = Self::config(&env);
+        config.admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+
+        AdminReq {
+            current_admin: config.admin,
+            pending_admin: new_admin,
+        }
+        .publish(&env);
+    }
+
+    pub fn accept_admin(env: Env) {
+        let storage = env.storage().instance();
+        let pending: Address = match storage.get(&DataKey::PendingAdmin) {
+            Some(pending) => pending,
+            None => panic_with_error!(&env, Error::NoPendingAdmin),
+        };
+        pending.require_auth();
+
+        let mut config = Self::config(&env);
+        let previous_admin = config.admin;
+        config.admin = pending.clone();
+        storage.set(&DataKey::Config, &config);
+        storage.remove(&DataKey::PendingAdmin);
+
+        AdminSet {
+            admin: pending,
+            previous_admin,
+        }
+        .publish(&env);
+    }
+
+    pub fn cancel_admin_proposal(env: Env) {
+        Self::config(&env).admin.require_auth();
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+    }
+
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     pub fn deposit_liquidity(env: Env, investor: Address, usdc_amount: u128) {
