@@ -1,0 +1,16 @@
+[package]
+name = "registry-v2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Test fixture, never deployed. It exists so the upgrade tests can install a
+# genuinely different executable rather than re-installing the same wasm and
+# proving nothing.
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }

@@ -574,3 +574,125 @@ fn only_the_proposed_address_can_accept() {
     assert!(f.pool.try_accept_admin().is_err());
     assert_eq!(f.pool.get_admin(), f.admin);
 }
+
+// ---------------------------------------------------------------------------
+// State migration across a real upgrade
+//
+// Same approach as property-registry's: install test-fixtures/pool-v2 through
+// the real `upgrade` entry point, then read v1-written state back through it.
+// ---------------------------------------------------------------------------
+
+mod pool_v2 {
+    soroban_sdk::contractimport!(file = "../target/wasm32v1-none/release/pool_v2.wasm");
+}
+
+impl Fixture {
+    fn upgrade_to_v2(&self) -> pool_v2::Client<'_> {
+        let hash = self.env.deployer().upload_contract_wasm(pool_v2::WASM);
+        self.pool.upgrade(&hash);
+        pool_v2::Client::new(&self.env, &self.pool_address)
+    }
+}
+
+#[test]
+fn upgrade_replaces_the_executable_in_place() {
+    let f = setup();
+    assert_eq!(f.pool.version(), 1);
+
+    let v2 = f.upgrade_to_v2();
+
+    assert_eq!(v2.version(), 2);
+    assert_eq!(v2.address, f.pool_address);
+    // v2-only entry point: the old code is gone, not still answering.
+    assert!(!v2.is_paused());
+}
+
+/// `Config` is a single instance entry holding four addresses; all four have to
+/// come through a code swap intact.
+#[test]
+fn config_survives_the_upgrade() {
+    let f = setup();
+    let next = Address::generate(&f.env);
+    f.pool.propose_admin(&next);
+
+    let v2 = f.upgrade_to_v2();
+
+    assert_eq!(v2.get_admin(), f.admin);
+    assert_eq!(v2.get_usdc_token(), f.usdc);
+    assert_eq!(v2.get_pool_token(), f.pool_token);
+    assert_eq!(v2.get_property_registry(), f.registry.address);
+    assert_eq!(v2.get_pending_admin(), Some(next));
+}
+
+/// The one that matters most: an upgrade must not lose track of who owes what.
+#[test]
+fn live_loan_state_survives_the_upgrade() {
+    let f = setup();
+    f.lock_collateral();
+    f.issue(100_000);
+    f.pool.repay(&PROPERTY_ID, &40_000);
+
+    let before = f.pool.get_loan(&PROPERTY_ID);
+    let pool_collateral = f.balance(&f.prop_token, &f.pool_address);
+
+    let v2 = f.upgrade_to_v2();
+    let after = v2.get_loan(&PROPERTY_ID);
+
+    assert_eq!(after.borrower, before.borrower);
+    assert_eq!(after.principal, before.principal);
+    assert_eq!(after.interest_rate_bps, before.interest_rate_bps);
+    assert_eq!(after.amount_repaid, before.amount_repaid);
+    assert_eq!(after.collateral_amount, before.collateral_amount);
+    assert_eq!(after.property_id, before.property_id);
+    assert_eq!(after.status, pool_v2::LoanStatus::Active);
+
+    // Spot-check against the values the test actually drove, not just self-
+    // consistency between the two reads.
+    assert_eq!(after.principal, 100_000);
+    assert_eq!(after.amount_repaid, 40_000);
+    assert_eq!(after.collateral_amount, COLLATERAL);
+
+    // Token balances live in the token contracts, not here, so the upgrade
+    // must not have disturbed custody of the collateral either.
+    assert_eq!(f.balance(&f.prop_token, &f.pool_address), pool_collateral);
+}
+
+/// The collateral entry is released at issuance; that absence has to survive
+/// too, or v2 would resurrect a stale duplicate of the loan's own field.
+#[test]
+fn released_collateral_entries_stay_released() {
+    let f = setup();
+    f.lock_collateral();
+    assert_eq!(f.pool.get_locked_collateral(&PROPERTY_ID), COLLATERAL);
+    f.issue(MAX_LOAN);
+
+    let v2 = f.upgrade_to_v2();
+
+    assert_eq!(v2.get_locked_collateral(&PROPERTY_ID), 0);
+    assert_eq!(v2.get_loan(&PROPERTY_ID).collateral_amount, COLLATERAL);
+}
+
+#[test]
+fn the_upgraded_contract_is_still_upgradeable() {
+    let f = setup();
+    f.lock_collateral();
+    f.issue(100_000);
+    let v2 = f.upgrade_to_v2();
+
+    let hash = f.env.deployer().upload_contract_wasm(pool_v2::WASM);
+    v2.upgrade(&hash);
+
+    assert_eq!(v2.version(), 2);
+    assert_eq!(v2.get_loan(&PROPERTY_ID).principal, 100_000);
+}
+
+#[test]
+fn new_state_introduced_by_v2_defaults_before_it_is_written() {
+    let f = setup();
+    let v2 = f.upgrade_to_v2();
+
+    assert!(!v2.is_paused(), "unset key reads as the default");
+
+    v2.set_paused(&true);
+    assert!(v2.is_paused());
+}

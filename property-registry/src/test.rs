@@ -362,3 +362,151 @@ fn handover_moves_upgrade_rights() {
     assert_eq!(f.client.get_admin(), next);
     f.client.verify_property(&f.submit());
 }
+
+// ---------------------------------------------------------------------------
+// State migration across a real upgrade
+//
+// These install a genuinely different executable -- test-fixtures/registry-v2,
+// compiled to its own wasm -- through the real `upgrade` entry point, then read
+// v1-written state back through v2 code.
+// ---------------------------------------------------------------------------
+
+mod registry_v2 {
+    soroban_sdk::contractimport!(file = "../target/wasm32v1-none/release/registry_v2.wasm");
+}
+
+impl Fixture {
+    /// Uploads v2 and installs it through `upgrade`, returning a client for the
+    /// new interface bound to the *same* contract address.
+    fn upgrade_to_v2(&self) -> registry_v2::Client<'_> {
+        let hash = self.env.deployer().upload_contract_wasm(registry_v2::WASM);
+        self.client.upgrade(&hash);
+        registry_v2::Client::new(&self.env, &self.contract_id)
+    }
+}
+
+/// The acceptance criterion: the code hash swaps and the new executable answers
+/// at the same address.
+#[test]
+fn upgrade_replaces_the_executable_in_place() {
+    let f = setup();
+    assert_eq!(f.client.version(), 1);
+
+    let v2 = f.upgrade_to_v2();
+
+    assert_eq!(v2.version(), 2);
+    assert_eq!(v2.address, f.contract_id);
+    // An entry point that only exists in v2 -- proof the old code is gone
+    // rather than still answering.
+    assert_eq!(v2.get_property_count(), 0);
+}
+
+/// Every property written by v1 must read back through v2 field for field.
+#[test]
+fn property_records_survive_the_upgrade() {
+    let f = setup();
+
+    let pending = f.submit();
+    let verified = f.submit();
+    let tokenized = f.submit();
+
+    f.client.verify_property(&verified);
+    f.client.verify_property(&tokenized);
+    f.client.set_valuation(&tokenized, &1_234_567);
+    let token = f.client.mint_property_tokens(&tokenized);
+
+    let ids = [pending, verified, tokenized];
+    let before = [
+        f.client.get_property(&pending),
+        f.client.get_property(&verified),
+        f.client.get_property(&tokenized),
+    ];
+
+    let v2 = f.upgrade_to_v2();
+
+    assert_eq!(v2.get_property_count(), 3);
+    for (id, expected) in ids.iter().zip(before.iter()) {
+        let after = v2.get_property(id);
+
+        assert_eq!(after.title_hash, expected.title_hash);
+        assert_eq!(after.trustee, expected.trustee);
+        assert_eq!(after.survey_doc_hash, expected.survey_doc_hash);
+        assert_eq!(after.usdc_value, expected.usdc_value);
+        assert_eq!(after.status as u32, expected.status as u32);
+        assert_eq!(after.token_address, expected.token_address);
+    }
+
+    // Spot-check the values themselves, not just that both sides agree.
+    let after = v2.get_property(&tokenized);
+    assert_eq!(after.usdc_value, 1_234_567);
+    assert_eq!(after.token_address, Some(token));
+    assert_eq!(after.status, registry_v2::PropertyStatus::Tokenized);
+    assert_eq!(
+        v2.get_property(&pending).status,
+        registry_v2::PropertyStatus::Pending
+    );
+}
+
+/// Instance storage carries the admin and any in-flight handover. Both have to
+/// come through, or an upgrade could silently orphan the contract.
+#[test]
+fn admin_state_survives_the_upgrade() {
+    let f = setup();
+    let next = Address::generate(&f.env);
+    f.client.propose_admin(&next);
+
+    let v2 = f.upgrade_to_v2();
+
+    assert_eq!(v2.get_admin(), f.admin);
+    assert_eq!(v2.get_pending_admin(), Some(next.clone()));
+
+    // The half-finished handover completes under the new code.
+    v2.accept_admin();
+    assert_eq!(v2.get_admin(), next);
+    assert_eq!(v2.get_pending_admin(), None);
+}
+
+/// v2 must remain upgradeable, or it is the last version this contract can run.
+#[test]
+fn the_upgraded_contract_is_still_upgradeable() {
+    let f = setup();
+    let id = f.submit();
+    let v2 = f.upgrade_to_v2();
+
+    // Re-install v2 over itself: enough to prove the escape hatch is wired up.
+    let hash = f.env.deployer().upload_contract_wasm(registry_v2::WASM);
+    v2.upgrade(&hash);
+
+    assert_eq!(v2.version(), 2);
+    assert_eq!(v2.get_property(&id).trustee, f.trustee);
+}
+
+/// State a later version introduces defaults cleanly rather than tripping over
+/// its own absence -- the additive pattern UPGRADING.md prescribes.
+#[test]
+fn new_state_introduced_by_v2_defaults_before_it_is_written() {
+    let f = setup();
+    let v2 = f.upgrade_to_v2();
+
+    assert_eq!(v2.get_schema_version(), 1, "unset key reads as the default");
+
+    v2.set_schema_version(&2);
+    assert_eq!(v2.get_schema_version(), 2);
+}
+
+/// The failure mode UPGRADING.md warns about, asserted rather than asserted-in-
+/// prose: struct contract types encode as a map keyed by field name, so a v2
+/// that adds a field to `PropertyInfo` cannot decode a v1-written record.
+#[test]
+fn adding_a_field_to_a_stored_struct_breaks_decoding() {
+    let f = setup();
+    let id = f.submit();
+    let v2 = f.upgrade_to_v2();
+
+    // Same entry, same key. The only difference is the shape being decoded into.
+    assert!(v2.try_get_property(&id).is_ok());
+    assert!(
+        v2.try_read_as_widened(&id).is_err(),
+        "a v1 record has no `flood_zone` key, so this must fail loudly"
+    );
+}

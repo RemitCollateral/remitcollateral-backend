@@ -1,5 +1,7 @@
 WASM_TARGET := wasm32v1-none
 OUT         := target/$(WASM_TARGET)/release
+# Deployable contracts only. test-fixtures/* also build to wasm but are test
+# scaffolding and have no size budget.
 CONTRACTS   := property_registry mortgage_pool
 
 # Soroban mainnet caps an uploaded contract at 64 KiB of wasm. Anything at or
