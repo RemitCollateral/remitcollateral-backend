@@ -2,3 +2,4 @@
 **/*.rs.bk
 *.wasm
 .DS_Store
+test_snapshots/

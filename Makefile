@@ -8,29 +8,39 @@ CONTRACTS   := property_registry mortgage_pool
 MAX_WASM_BYTES := 65536
 WARN_PCT       := 80
 
-.PHONY: all build test check fmt clippy size clean
+.PHONY: all build test check fmt fmt-check clippy size clean
 
 all: build size
 
-# property-registry is built first because mortgage-pool currently pulls its
-# client in with `contractimport!`, which reads the registry's .wasm off disk at
-# macro-expansion time. Cargo does not know about that edge, so a cold
-# `cargo build` of the whole workspace can race and fail.
 build:
-	cargo build --release --target $(WASM_TARGET) -p property-registry
 	cargo build --release --target $(WASM_TARGET)
 
-# Host target on purpose: tests need std and the testutils feature.
-test:
+# Host target on purpose: tests need std and the testutils feature. Depends on
+# `build` because mortgage-pool's cross-contract test imports the registry's
+# compiled wasm, to check its hand-written client against the real artifact.
+test: build
 	cargo test
 
 fmt:
 	cargo fmt --all
 
-clippy:
-	cargo clippy --release --target $(WASM_TARGET) --all-targets -- -D warnings
+# Verification form, for `check` and CI -- `fmt` itself rewrites files, which is
+# not what you want a check to do.
+fmt-check:
+	cargo fmt --all -- --check
 
-check: fmt clippy test
+# Two passes: the contracts as they are actually compiled (wasm, libs only),
+# then everything including tests on the host. Linting --all-targets against
+# wasm does not work -- the test targets need `testutils`, which pulls in
+# host-only crates.
+#
+# Depends on `build` for the same reason `test` does: the host pass compiles the
+# test modules, one of which imports the registry's wasm.
+clippy: build
+	cargo clippy --release --target $(WASM_TARGET) --lib -- -D warnings
+	cargo clippy --all-targets -- -D warnings
+
+check: fmt-check clippy test size
 
 # Reports each contract against the mainnet budget and fails the build if any
 # contract no longer fits. Wire this into CI so a size regression is caught at
