@@ -115,7 +115,7 @@ impl PropertyRegistry {
             .get(&key)
             .expect("property not found");
 
-        if property.status != PropertyStatus::Verified {
+        if property.status == PropertyStatus::Pending {
             panic!("property must be verified first");
         }
 
@@ -124,12 +124,12 @@ impl PropertyRegistry {
 
         log!(&env, "Property valuation set. ID: {}, Value: {}", property_id, usdc_value);
         env.events().publish(
-            (Symbol::new(&env, "prop_valued"), property_id),
+            (Symbol::new(&env, "prop_valuation_set"), property_id),
             usdc_value,
         );
     }
 
-    pub fn mint_property_tokens(env: Env, property_id: u64) -> Address {
+    pub fn mint_property_tokens(env: Env, property_id: u64, token_address: Address) -> Address {
         let admin = Self::get_admin(env.clone());
         admin.require_auth();
 
@@ -146,11 +146,6 @@ impl PropertyRegistry {
         if property.usdc_value == 0 {
             panic!("property valuation is zero");
         }
-
-        // In a production contract, we would deploy a new token contract (e.g. SAC or custom token).
-        // Here, we generate a mock contract address for demonstration / testing purposes.
-        // We can use the current contract address and property_id to generate a deterministic address.
-        let token_address = env.current_contract_address(); 
 
         property.token_address = Some(token_address.clone());
         property.status = PropertyStatus::Tokenized;
