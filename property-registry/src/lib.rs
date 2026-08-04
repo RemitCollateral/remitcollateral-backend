@@ -1,37 +1,5 @@
 #![no_std]
-use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
-    BytesN, Env,
-};
-
-// Integer error codes instead of string panics. `panic!("property not found")`
-// puts the message in linear memory and pulls in `core::fmt` plumbing that
-// survives LTO; a `contracterror` variant is a single u32 the host surfaces to
-// the caller directly, so it is both smaller and more useful off-chain.
-//
-// Note these are `//` and not `///` on purpose: rustdoc comments on public
-// contract items are written verbatim into the wasm's `contractspecv0` section,
-// so prose here is prose you pay to upload. Rationale goes in plain comments,
-// and doc comments stay short enough to earn their bytes.
-#[contracterror]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    PropertyNotFound = 3,
-    NotPending = 4,
-    NotVerified = 5,
-    NotValued = 6,
-    NotTokenized = 7,
-    NoPendingAdmin = 8,
-}
-
-// Bumped by hand whenever this contract's wasm is cut for release. `version()`
-// is how an operator confirms which executable a deployed instance is actually
-// running after an upgrade -- the code hash alone does not tell you that at a
-// glance.
-pub const CONTRACT_VERSION: u32 = 1;
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Symbol, log};
 
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -317,23 +285,31 @@ impl PropertyRegistry {
     pub fn set_valuation(env: Env, property_id: u64, usdc_value: u128) {
         Self::require_admin(&env);
 
-        let mut property = Self::load(&env, property_id);
-        if property.status != PropertyStatus::Verified {
-            panic_with_error!(&env, Error::NotVerified);
+        if property.status == PropertyStatus::Pending {
+            panic!("property must be verified first");
         }
 
         property.usdc_value = usdc_value;
         Self::store(&env, property_id, &property);
 
-        Valued {
-            property_id,
+        log!(&env, "Property valuation set. ID: {}, Value: {}", property_id, usdc_value);
+        env.events().publish(
+            (Symbol::new(&env, "prop_valuation_set"), property_id),
             usdc_value,
         }
         .publish(&env);
     }
 
-    pub fn mint_property_tokens(env: Env, property_id: u64) -> Address {
-        Self::require_admin(&env);
+    pub fn mint_property_tokens(env: Env, property_id: u64, token_address: Address) -> Address {
+        let admin = Self::get_admin(env.clone());
+        admin.require_auth();
+
+        let key = DataKey::Property(property_id);
+        let mut property: PropertyInfo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("property not found");
 
         let mut property = Self::load(&env, property_id);
         if property.status != PropertyStatus::Verified {
@@ -342,11 +318,6 @@ impl PropertyRegistry {
         if property.usdc_value == 0 {
             panic_with_error!(&env, Error::NotValued);
         }
-
-        // In a production contract this would deploy a real token contract (SAC
-        // or custom). The current contract address stands in for that so the
-        // downstream flow can be exercised end to end.
-        let token_address = env.current_contract_address();
 
         property.token_address = Some(token_address.clone());
         property.status = PropertyStatus::Tokenized;
@@ -361,14 +332,30 @@ impl PropertyRegistry {
         token_address
     }
 
-    // Lets sibling contracts (MortgagePool) advance a property's lifecycle
-    // state.
-    //
-    // NOTE: unauthenticated, unchanged from the original implementation. That
-    // is a real gap -- any account can move a property to Repaid or Defaulted
-    // -- but closing it means giving the registry a notion of which contract is
-    // allowed to call it, which is a behavioural change well outside a
-    // performance pass. Left as-is on purpose.
+    pub fn clawback_property_tokens(env: Env, property_id: u64, from: Address, amount: u128) {
+        let admin = Self::get_admin(env.clone());
+        admin.require_auth();
+
+        let key = DataKey::Property(property_id);
+        let property: PropertyInfo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("property not found");
+
+        let token_address = property.token_address.expect("property not tokenized");
+
+        // Invoke the Stellar Asset Contract clawback helper
+        let token_admin_client = token::StellarAssetClient::new(&env, &token_address);
+        token_admin_client.clawback(&from, &(amount as i128));
+
+        log!(&env, "Tokens clawed back for Property ID: {}. From: {:?}, Amount: {}", property_id, from, amount);
+        env.events().publish(
+            (Symbol::new(&env, "prop_clawback"), property_id),
+            (from, amount),
+        );
+    }
+
     pub fn update_status(env: Env, property_id: u64, status: PropertyStatus) {
         let mut property = Self::load(&env, property_id);
         property.status = status;
@@ -399,5 +386,77 @@ impl PropertyRegistry {
     }
 }
 
+// ============================================================================
+// TESTS
+// ============================================================================
+
 #[cfg(test)]
-mod test;
+mod tests {
+    use super::*;
+    use soroban_sdk::{Env, Address, token};
+    use soroban_sdk::testutils::Address as _;
+
+    fn dummy_hash(env: &Env, val: u8) -> BytesN<32> {
+        let mut arr = [0u8; 32];
+        arr[0] = val;
+        BytesN::from_array(env, &arr)
+    }
+
+    #[test]
+    fn test_clawback_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let admin = Address::generate(&env);
+        let trustee = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        // Deploy PropertyRegistry
+        let registry_addr = env.register(PropertyRegistry, ());
+        let registry_client = PropertyRegistryClient::new(&env, &registry_addr);
+        registry_client.initialize(&admin);
+
+        // Deploy mock PROP token contract (supporting clawback via SAC)
+        let prop_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let prop_token_admin = token::StellarAssetClient::new(&env, &prop_token_addr);
+        let prop_token_client = token::Client::new(&env, &prop_token_addr);
+
+        // Mint tokens to user
+        prop_token_admin.mint(&user, &1000);
+        assert_eq!(prop_token_client.balance(&user), 1000);
+
+        // Submit property, verify, and set valuation
+        let title_hash = dummy_hash(&env, 1);
+        let survey_hash = dummy_hash(&env, 2);
+        let prop_id = registry_client.submit_property(&title_hash, &trustee, &survey_hash);
+        registry_client.verify_property(&prop_id);
+        registry_client.set_valuation(&prop_id, &10_000);
+
+        // Mint PROP tokens (registering the mock token contract address)
+        registry_client.mint_property_tokens(&prop_id, &prop_token_addr);
+
+        // Trigger clawback of 400 tokens by the admin
+        registry_client.clawback_property_tokens(&prop_id, &user, &400);
+
+        // Verify balance is reduced
+        assert_eq!(prop_token_client.balance(&user), 600);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_clawback_unauthorized() {
+        let env = Env::default();
+        // Do not call mock_all_auths() to trigger authorization failure
+
+        let admin = Address::generate(&env);
+        let user = Address::generate(&env);
+
+        // Deploy PropertyRegistry
+        let registry_addr = env.register(PropertyRegistry, ());
+        let registry_client = PropertyRegistryClient::new(&env, &registry_addr);
+        registry_client.initialize(&admin);
+
+        // Attempt clawback without admin authorization -> should fail auth check and panic
+        registry_client.clawback_property_tokens(&1, &user, &400);
+    }
+}

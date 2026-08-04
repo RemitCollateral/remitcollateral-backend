@@ -5,12 +5,12 @@ edition.workspace = true
 license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
-doctest = false
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-soroban-sdk = { workspace = true }
+soroban-sdk = "26.0.1"
 
 [dev-dependencies]
-# See property-registry/Cargo.toml -- testutils stays out of the deployed wasm.
-soroban-sdk = { workspace = true, features = ["testutils"] }
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+soroban-env-common = "26.1.3"
+property-registry = { path = "../property-registry" }

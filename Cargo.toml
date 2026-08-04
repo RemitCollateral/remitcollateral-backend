@@ -3,11 +3,6 @@ resolver = "2"
 members = [
     "property-registry",
     "mortgage-pool",
-    # Stand-in "next release" builds. Test fixtures only -- never deployed, and
-    # deliberately not in the Makefile's size budget. They are workspace members
-    # so a plain `cargo build` produces the wasm the upgrade tests install.
-    "test-fixtures/registry-v2",
-    "test-fixtures/pool-v2",
 ]
 
 [workspace.package]

@@ -27,34 +27,37 @@ pub trait PropertyRegistryInterface {
     fn update_status(env: Env, property_id: u64, status: u32);
 }
 
-// Discriminants of PropertyRegistry::PropertyStatus. Kept in sync by the
-// cross-contract tests rather than by importing the enum.
-const STATUS_MORTGAGED: u32 = 3;
-const STATUS_REPAID: u32 = 4;
-const STATUS_DEFAULTED: u32 = 5;
+// Interface to call the PropertyRegistry contract
+pub mod property_registry_contract {
+    use soroban_sdk::{contractclient, contracttype, Address, BytesN, Env};
 
-// See the note on property-registry's CONTRACT_VERSION.
-pub const CONTRACT_VERSION: u32 = 1;
+    #[contracttype]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum PropertyStatus {
+        Pending = 0,
+        Verified = 1,
+        Tokenized = 2,
+        Mortgaged = 3,
+        Repaid = 4,
+        Defaulted = 5,
+    }
 
-const INTEREST_RATE_BPS: u32 = 800; // 8%
-const BPS_DENOMINATOR: u128 = 10_000;
-const MAX_LTV_PCT: u128 = 70;
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct PropertyInfo {
+        pub title_hash: BytesN<32>,
+        pub trustee: Address,
+        pub survey_doc_hash: BytesN<32>,
+        pub usdc_value: u128,
+        pub status: PropertyStatus,
+        pub token_address: Option<Address>,
+    }
 
-// See the note on PropertyRegistry's error enum -- integer codes rather than
-// string panics.
-#[contracterror]
-#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
-#[repr(u32)]
-pub enum Error {
-    AlreadyInitialized = 1,
-    NotInitialized = 2,
-    LoanNotFound = 3,
-    LoanNotActive = 4,
-    LoanNotDefaulted = 5,
-    NoCollateral = 6,
-    LtvExceeded = 7,
-    AmountOverflow = 8,
-    NoPendingAdmin = 9,
+    #[contractclient(name = "Client")]
+    pub trait PropertyRegistryTrait {
+        fn get_property(env: Env, property_id: u64) -> PropertyInfo;
+        fn update_status(env: Env, property_id: u64, status: PropertyStatus);
+    }
 }
 
 #[contracttype]
@@ -550,5 +553,306 @@ impl MortgagePool {
     }
 }
 
+// ============================================================================
+// TESTS
+// ============================================================================
+
 #[cfg(test)]
-mod test;
+mod tests {
+    use super::*;
+    use soroban_sdk::{Env, Address, token};
+    use soroban_sdk::testutils::Address as _;
+    use property_registry::{PropertyRegistry, PropertyRegistryClient};
+    use property_registry::PropertyStatus as RegStatus;
+
+    fn dummy_hash(env: &Env, val: u8) -> soroban_sdk::BytesN<32> {
+        let mut arr = [0u8; 32];
+        arr[0] = val;
+        soroban_sdk::BytesN::from_array(env, &arr)
+    }
+
+    fn setup_test(env: &Env) -> (Address, Address, Address, Address, Address, MortgagePoolClient, PropertyRegistryClient) {
+        let admin = Address::generate(env);
+        let investor = Address::generate(env);
+        let borrower = Address::generate(env);
+        let liquidator = Address::generate(env);
+
+        // Deploy USDC token
+        let usdc_addr = env.register_stellar_asset_contract(admin.clone());
+        let usdc_admin = token::StellarAssetClient::new(env, &usdc_addr);
+        usdc_admin.mint(&investor, &10_000);
+        usdc_admin.mint(&liquidator, &10_000);
+        usdc_admin.mint(&borrower, &10_000);
+
+        // Deploy Pool token (POOL-HC)
+        let pool_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let pool_token_admin = token::StellarAssetClient::new(env, &pool_token_addr);
+
+        // Deploy PropertyRegistry
+        let registry_addr = env.register(PropertyRegistry, ());
+        let registry_client = PropertyRegistryClient::new(env, &registry_addr);
+        registry_client.initialize(&admin);
+
+        // Deploy MortgagePool
+        let pool_addr = env.register(MortgagePool, ());
+        let pool_client = MortgagePoolClient::new(env, &pool_addr);
+        pool_client.initialize(&admin, &usdc_addr, &pool_token_addr, &registry_addr);
+
+        // Pre-fund pool token to the pool contract so it can transfer it to depositors
+        pool_token_admin.mint(&pool_addr, &10_000);
+
+        (admin, investor, borrower, liquidator, usdc_addr, pool_client, registry_client)
+    }
+
+    #[test]
+    fn test_deposit_liquidity() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (_admin, investor, _borrower, _liquidator, usdc_addr, pool_client, _registry_client) = setup_test(&env);
+        let usdc_client = token::Client::new(&env, &usdc_addr);
+        let pool_token_addr = pool_client.get_pool_token();
+        let pool_token_client = token::Client::new(&env, &pool_token_addr);
+
+        // Deposit liquidity
+        pool_client.deposit_liquidity(&investor, &3000);
+
+        // Verify balances
+        assert_eq!(usdc_client.balance(&investor), 7000);
+        assert_eq!(usdc_client.balance(&pool_client.address), 3000);
+        assert_eq!(pool_token_client.balance(&investor), 3000);
+    }
+
+    #[test]
+    fn test_mortgage_ltv_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, borrower, _liquidator, usdc_addr, pool_client, registry_client) = setup_test(&env);
+        let usdc_client = token::Client::new(&env, &usdc_addr);
+
+        // Setup property registry with valuation = 1000 USDC
+        let title_hash = dummy_hash(&env, 1);
+        let survey_hash = dummy_hash(&env, 2);
+        let prop_id = registry_client.submit_property(&title_hash, &borrower, &survey_hash);
+        registry_client.verify_property(&prop_id);
+        registry_client.set_valuation(&prop_id, &1000);
+
+        // Deploy PROP token contract for this property and register it
+        let prop_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let prop_token_admin = token::StellarAssetClient::new(&env, &prop_token_addr);
+        prop_token_admin.mint(&borrower, &100);
+        registry_client.mint_property_tokens(&prop_id, &prop_token_addr);
+
+        // Deposit liquidity to MortgagePool
+        pool_client.deposit_liquidity(&investor, &5000);
+
+        // Lock 100 PROP tokens as collateral
+        pool_client.lock_collateral(&borrower, &prop_id, &100);
+
+        // Max borrow limit is 700 USDC (70% of 1000)
+        // Request 700 USDC (within limit)
+        let build_escrow = Address::generate(&env);
+        pool_client.issue_mortgage(&prop_id, &700, &build_escrow);
+
+        // Verify state
+        assert_eq!(usdc_client.balance(&build_escrow), 700);
+        assert_eq!(registry_client.get_property(&prop_id).status, RegStatus::Mortgaged);
+    }
+
+    #[test]
+    #[should_panic(expected = "requested amount exceeds 70% LTV limit")]
+    fn test_mortgage_ltv_exceeded() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, borrower, _liquidator, _usdc_addr, pool_client, registry_client) = setup_test(&env);
+
+        // Setup property registry with valuation = 1000 USDC
+        let title_hash = dummy_hash(&env, 1);
+        let survey_hash = dummy_hash(&env, 2);
+        let prop_id = registry_client.submit_property(&title_hash, &borrower, &survey_hash);
+        registry_client.verify_property(&prop_id);
+        registry_client.set_valuation(&prop_id, &1000);
+
+        // Deploy PROP token contract
+        let prop_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let prop_token_admin = token::StellarAssetClient::new(&env, &prop_token_addr);
+        prop_token_admin.mint(&borrower, &100);
+        registry_client.mint_property_tokens(&prop_id, &prop_token_addr);
+
+        // Deposit liquidity
+        pool_client.deposit_liquidity(&investor, &5000);
+
+        // Lock collateral
+        pool_client.lock_collateral(&borrower, &prop_id, &100);
+
+        // Attempt to borrow 701 USDC (exceeds 70% limit) -> should panic
+        let build_escrow = Address::generate(&env);
+        pool_client.issue_mortgage(&prop_id, &701, &build_escrow);
+    }
+
+    #[test]
+    fn test_repayment_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, borrower, _liquidator, usdc_addr, pool_client, registry_client) = setup_test(&env);
+        let usdc_client = token::Client::new(&env, &usdc_addr);
+
+        // Setup property with valuation = 1000 USDC
+        let title_hash = dummy_hash(&env, 1);
+        let survey_hash = dummy_hash(&env, 2);
+        let prop_id = registry_client.submit_property(&title_hash, &borrower, &survey_hash);
+        registry_client.verify_property(&prop_id);
+        registry_client.set_valuation(&prop_id, &1000);
+
+        // Deploy PROP token
+        let prop_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let prop_token_admin = token::StellarAssetClient::new(&env, &prop_token_addr);
+        let prop_token_client = token::Client::new(&env, &prop_token_addr);
+        prop_token_admin.mint(&borrower, &100);
+        registry_client.mint_property_tokens(&prop_id, &prop_token_addr);
+
+        // Deposit and lock
+        pool_client.deposit_liquidity(&investor, &5000);
+        pool_client.lock_collateral(&borrower, &prop_id, &100);
+
+        // Borrow 500 USDC
+        let build_escrow = Address::generate(&env);
+        pool_client.issue_mortgage(&prop_id, &500, &build_escrow);
+
+        // Repay partial: 200 USDC
+        pool_client.repay(&prop_id, &200);
+        
+        // Repay remaining to clear loan: 500 * 1.08 = 540 USDC total due.
+        // We already repaid 200, so remaining is 340 USDC.
+        pool_client.repay(&prop_id, &340);
+
+        // Verify repayment cleared loan and returned collateral
+        assert_eq!(prop_token_client.balance(&borrower), 100);
+        assert_eq!(prop_token_client.balance(&pool_client.address), 0);
+        assert_eq!(registry_client.get_property(&prop_id).status, RegStatus::Repaid);
+    }
+
+    #[test]
+    fn test_liquidation_flow() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, borrower, liquidator, usdc_addr, pool_client, registry_client) = setup_test(&env);
+        let usdc_client = token::Client::new(&env, &usdc_addr);
+
+        // Setup property with valuation = 1000 USDC
+        let title_hash = dummy_hash(&env, 1);
+        let survey_hash = dummy_hash(&env, 2);
+        let prop_id = registry_client.submit_property(&title_hash, &borrower, &survey_hash);
+        registry_client.verify_property(&prop_id);
+        registry_client.set_valuation(&prop_id, &1000);
+
+        // Deploy PROP token
+        let prop_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let prop_token_admin = token::StellarAssetClient::new(&env, &prop_token_addr);
+        let prop_token_client = token::Client::new(&env, &prop_token_addr);
+        prop_token_admin.mint(&borrower, &100);
+        registry_client.mint_property_tokens(&prop_id, &prop_token_addr);
+
+        // Deposit and lock
+        pool_client.deposit_liquidity(&investor, &5000);
+        pool_client.lock_collateral(&borrower, &prop_id, &100);
+
+        // Borrow 500 USDC
+        let build_escrow = Address::generate(&env);
+        pool_client.issue_mortgage(&prop_id, &500, &build_escrow);
+
+        // Admin triggers default
+        pool_client.trigger_default(&prop_id);
+        assert_eq!(registry_client.get_property(&prop_id).status, RegStatus::Defaulted);
+
+        // Liquidator liquidates the loan. Debt is remaining principal: 500 USDC (no repayments made).
+        let liquidator_usdc_before = usdc_client.balance(&liquidator);
+        pool_client.liquidate(&prop_id, &liquidator);
+
+        // Verify liquidator paid outstanding debt and received the PROP tokens
+        assert_eq!(usdc_client.balance(&liquidator), liquidator_usdc_before - 500);
+        assert_eq!(prop_token_client.balance(&liquidator), 100);
+        assert_eq!(prop_token_client.balance(&pool_client.address), 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "loan is not in defaulted status")]
+    fn test_liquidation_fails_if_active() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, borrower, liquidator, _usdc_addr, pool_client, registry_client) = setup_test(&env);
+
+        // Setup property
+        let title_hash = dummy_hash(&env, 1);
+        let survey_hash = dummy_hash(&env, 2);
+        let prop_id = registry_client.submit_property(&title_hash, &borrower, &survey_hash);
+        registry_client.verify_property(&prop_id);
+        registry_client.set_valuation(&prop_id, &1000);
+
+        // Deploy PROP token
+        let prop_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let prop_token_admin = token::StellarAssetClient::new(&env, &prop_token_addr);
+        prop_token_admin.mint(&borrower, &100);
+        registry_client.mint_property_tokens(&prop_id, &prop_token_addr);
+
+        // Deposit, lock, and borrow
+        pool_client.deposit_liquidity(&investor, &5000);
+        pool_client.lock_collateral(&borrower, &prop_id, &100);
+        let build_escrow = Address::generate(&env);
+        pool_client.issue_mortgage(&prop_id, &500, &build_escrow);
+
+        // Attempt liquidation on active loan -> should panic
+        pool_client.liquidate(&prop_id, &liquidator);
+    }
+
+    #[test]
+    fn test_valuation_change_margin_call_liquidation() {
+        let env = Env::default();
+        env.mock_all_auths();
+
+        let (admin, investor, borrower, liquidator, usdc_addr, pool_client, registry_client) = setup_test(&env);
+        let usdc_client = token::Client::new(&env, &usdc_addr);
+
+        // Setup property with valuation = 1000 USDC
+        let title_hash = dummy_hash(&env, 1);
+        let survey_hash = dummy_hash(&env, 2);
+        let prop_id = registry_client.submit_property(&title_hash, &borrower, &survey_hash);
+        registry_client.verify_property(&prop_id);
+        registry_client.set_valuation(&prop_id, &1000);
+
+        // Deploy PROP token
+        let prop_token_addr = env.register_stellar_asset_contract(admin.clone());
+        let prop_token_admin = token::StellarAssetClient::new(&env, &prop_token_addr);
+        let prop_token_client = token::Client::new(&env, &prop_token_addr);
+        prop_token_admin.mint(&borrower, &100);
+        registry_client.mint_property_tokens(&prop_id, &prop_token_addr);
+
+        // Deposit, lock, and borrow 700 USDC (max 70% LTV of 1000)
+        pool_client.deposit_liquidity(&investor, &5000);
+        pool_client.lock_collateral(&borrower, &prop_id, &100);
+        let build_escrow = Address::generate(&env);
+        pool_client.issue_mortgage(&prop_id, &700, &build_escrow);
+
+        // Valuation drops significantly: e.g. down to 500 USDC
+        // LTV is now 700 / 500 = 140% (exceeds borrowing limit and liquidation threshold)
+        registry_client.set_valuation(&prop_id, &500);
+
+        // Admin triggers default (margin call threshold breach)
+        pool_client.trigger_default(&prop_id);
+        assert_eq!(registry_client.get_property(&prop_id).status, RegStatus::Defaulted);
+
+        // Liquidator liquidates the defaulted loan for the remaining debt (700 USDC)
+        let liquidator_usdc_before = usdc_client.balance(&liquidator);
+        pool_client.liquidate(&prop_id, &liquidator);
+
+        // Verify successful liquidation after valuation drop
+        assert_eq!(usdc_client.balance(&liquidator), liquidator_usdc_before - 700);
+        assert_eq!(prop_token_client.balance(&liquidator), 100);
+        assert_eq!(prop_token_client.balance(&pool_client.address), 0);
+    }
+}
