@@ -1,4 +1,5 @@
 import { Router, Request, Response } from "express";
+import { logEvent } from "./audit";
 
 export const router = Router();
 
@@ -63,6 +64,13 @@ router.post("/kyc/verify", (req: Request, res: Response) => {
 
   users.set(address, user);
 
+  logEvent({
+    type: "KYC",
+    action: "USER_VERIFIED",
+    actor: address,
+    details: `User ${name} verified as ${role}`,
+  });
+
   console.log(`[KYC]: User ${name} (${address}) verified successfully as ${role}`);
   return res.json({
     message: "KYC verification successful",
@@ -109,6 +117,14 @@ router.post("/properties/submit", (req: Request, res: Response) => {
 
   properties.set(id, newProperty);
 
+  logEvent({
+    type: "PROPERTY",
+    action: "PROPERTY_SUBMITTED",
+    actor: trustee,
+    entityId: id,
+    details: `Property submitted with title hash ${titleHash}`,
+  });
+
   console.log(`[Property]: Property ID ${id} submitted by trustee ${trustee}`);
   return res.status(201).json({
     message: "Property submitted successfully",
@@ -144,6 +160,13 @@ router.post("/properties/:id/verify-title", (req: Request, res: Response) => {
   // Simulating land registry check
   property.status = "Verified";
   properties.set(id, property);
+
+  logEvent({
+    type: "PROPERTY",
+    action: "TITLE_VERIFIED",
+    entityId: id,
+    details: `Title verified via Land Registry Oracle`,
+  });
 
   console.log(`[Oracle]: Title for Property ID ${id} verified via Land Registry API`);
   return res.json({
@@ -204,6 +227,13 @@ router.post("/properties/:id/milestones/submit", (req: Request, res: Response) =
   milestone.evidenceHash = evidenceHash;
   properties.set(id, property);
 
+  logEvent({
+    type: "MILESTONE",
+    action: "EVIDENCE_SUBMITTED",
+    entityId: id,
+    details: `Milestone stage ${stage} evidence submitted: ${evidenceHash}`,
+  });
+
   console.log(`[Milestone]: Evidence for Property ID ${id}, Stage ${stage} submitted: ${evidenceHash}`);
   return res.json({
     message: "Milestone evidence submitted successfully",
@@ -237,6 +267,13 @@ router.post("/properties/:id/milestones/verify", (req: Request, res: Response) =
 
   milestone.verified = true;
   properties.set(id, property);
+
+  logEvent({
+    type: "MILESTONE",
+    action: "MILESTONE_VERIFIED",
+    entityId: id,
+    details: `Milestone stage ${stage} verified by Oracle`,
+  });
 
   console.log(`[Oracle]: Milestone for Property ID ${id}, Stage ${stage} verified successfully`);
   return res.json({
