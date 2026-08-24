@@ -1,0 +1,195 @@
+// ─── Domain Models & Entities ────────────────────────────────────────
+
+export interface Guarantor {
+  id: string;
+  walletAddress: string;
+  displayName?: string;
+  createdAt: string;
+}
+
+export interface Vault {
+  id: string;
+  guarantorId: string;
+  collateralBalance: number; // total USDC deposited
+  lockedAmount: number;       // portion currently backing active loans
+  createdAt: string;
+}
+
+export interface Beneficiary {
+  id: string;
+  phoneNumber: string;
+  localKycRef: string;
+  reputationScore: number;    // composite score (0 to 100)
+  createdAt: string;
+}
+
+export type RemittanceSource = "partner_reported" | "self_declared";
+
+export interface RemittanceRecord {
+  id: string;
+  guarantorId: string;
+  beneficiaryId: string;
+  amountUsd: number;
+  localAmount: number;
+  localCurrency: string;       // e.g. "NGN"
+  source: RemittanceSource;
+  sentAt: string;
+  createdAt: string;
+}
+
+export type LoanStatus = "active" | "grace" | "repaid" | "defaulted";
+
+export interface InstallmentScheduleItem {
+  installmentNumber: number;
+  amountLocal: number;
+  amountUsd: number;
+  dueAt: string;
+  status: "pending" | "repaid" | "overdue";
+  repaidAt?: string;
+}
+
+export interface Loan {
+  id: string;
+  vaultId: string;
+  beneficiaryId: string;
+  guarantorId: string;
+  principalLocal: number;
+  principalUsd: number;
+  localCurrency: string;
+  ltvRatio: number;            // e.g. 1.50 (150%) or 1.10 (110%)
+  installmentCount: number;
+  installmentIntervalDays: number;
+  schedule: InstallmentScheduleItem[];
+  status: LoanStatus;
+  graceExpiresAt?: string;
+  purpose?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RepaymentAttestation {
+  id: string;
+  loanId: string;
+  installmentNumber: number;
+  amountLocal: number;
+  amountUsd: number;
+  attestedBy: string;
+  partnerSignature: string;
+  attestedAt: string;
+  createdAt: string;
+}
+
+export type AuditEventType =
+  | "GUARANTOR"
+  | "VAULT"
+  | "BENEFICIARY"
+  | "LOAN"
+  | "REPAYMENT"
+  | "REMITTANCE"
+  | "REPUTATION"
+  | "SYSTEM";
+
+export interface AuditEvent {
+  id: string;
+  eventType: AuditEventType;
+  action: string;
+  actor?: string;
+  entityType?: string;
+  entityId?: string;
+  details: Record<string, any> | string;
+  createdAt: string;
+}
+
+// ─── DTOs & Request Inputs ───────────────────────────────────────────
+
+export interface RegisterGuarantorDTO {
+  walletAddress: string;
+  displayName?: string;
+}
+
+export interface DepositVaultDTO {
+  amountUsd: number;
+  txHash?: string;
+}
+
+export interface WithdrawVaultDTO {
+  amountUsd: number;
+  destinationAddress: string;
+}
+
+export interface RegisterBeneficiaryDTO {
+  phoneNumber: string;
+  localKycRef: string;
+}
+
+export interface IngestRemittanceDTO {
+  guarantorId: string;
+  beneficiaryId: string;
+  amountUsd: number;
+  localAmount: number;
+  localCurrency: string;
+  source: RemittanceSource;
+  sentAt: string;
+}
+
+export interface OriginateLoanDTO {
+  beneficiaryId: string;
+  principalLocal: number;
+  localCurrency: string;
+  installmentCount: number;
+  installmentIntervalDays?: number;
+  purpose?: string;
+}
+
+export interface SubmitAttestationDTO {
+  loanId: string;
+  installmentNumber: number;
+  amountLocal: number;
+  amountUsd: number;
+  attestedBy: string;
+  partnerSignature: string;
+  attestedAt: string;
+}
+
+// ─── Off-Ramp Adapter Types (§6) ────────────────────────────────────
+
+export interface DisbursementRequest {
+  loan_id: string;
+  beneficiary_phone: string;
+  beneficiary_kyc_ref: string;
+  amount_local: number;
+  local_currency: string;
+  idempotency_key: string;
+}
+
+export interface DisbursementResult {
+  success: boolean;
+  partner_reference: string;
+  disbursed_at: string;
+  failure_reason?: string;
+}
+
+export interface OffRampRemittanceRecord {
+  amount_usd: number;
+  local_amount: number;
+  local_currency: string;
+  sent_at: string;
+}
+
+export interface OffRampAttestation {
+  loan_id: string;
+  installment_number: number;
+  amount_local: number;
+  amount_usd: number;
+  beneficiary_phone: string;
+  attested_at: string;
+  partner_signature: string;
+}
+
+// ─── Auth Types ─────────────────────────────────────────────────────
+
+export interface AuthChallenge {
+  walletAddress: string;
+  challenge: string;
+  expiresAt: string;
+}
