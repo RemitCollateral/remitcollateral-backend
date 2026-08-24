@@ -1,7 +1,7 @@
 {
-  "name": "backend",
+  "name": "remitcollateral-backend",
   "version": "1.0.0",
-  "description": "StellarHomes Backend Service",
+  "description": "RemitCollateral Backend — Crypto-collateralized lending for local beneficiaries who never touch crypto",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
