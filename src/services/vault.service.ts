@@ -1,0 +1,157 @@
+import { Vault } from "../types";
+import {
+  vaults,
+  guarantorToVault,
+  generateId,
+} from "../stores";
+import { logAuditEvent } from "./audit.service";
+
+// ─── Service ─────────────────────────────────────────────────────────
+
+/**
+ * Get or create a vault for the given guarantor.
+ * Each guarantor has exactly one vault (isolated, not pooled).
+ */
+export function getOrCreateVault(guarantorId: string): Vault {
+  const existingVaultId = guarantorToVault.get(guarantorId);
+  if (existingVaultId) {
+    return vaults.get(existingVaultId)!;
+  }
+
+  const vault: Vault = {
+    id: generateId(),
+    guarantorId,
+    collateralBalance: 0,
+    lockedAmount: 0,
+    createdAt: new Date().toISOString(),
+  };
+
+  vaults.set(vault.id, vault);
+  guarantorToVault.set(guarantorId, vault.id);
+
+  logAuditEvent({
+    eventType: "VAULT",
+    action: "VAULT_CREATED",
+    actor: guarantorId,
+    entityType: "vault",
+    entityId: vault.id,
+    details: { guarantorId },
+  });
+
+  return vault;
+}
+
+/**
+ * Deposit USDC into the guarantor's vault.
+ */
+export function deposit(guarantorId: string, amount: number, txHash?: string): Vault {
+  const vault = getOrCreateVault(guarantorId);
+
+  if (amount <= 0) {
+    throw new Error("Deposit amount must be positive");
+  }
+
+  vault.collateralBalance += amount;
+  vaults.set(vault.id, vault);
+
+  logAuditEvent({
+    eventType: "VAULT",
+    action: "COLLATERAL_DEPOSITED",
+    actor: guarantorId,
+    entityType: "vault",
+    entityId: vault.id,
+    details: { amount, txHash, newBalance: vault.collateralBalance },
+  });
+
+  return vault;
+}
+
+/**
+ * Withdraw unlocked collateral from the guarantor's vault.
+ * Only the unlocked portion (balance - locked) can be withdrawn.
+ */
+export function withdraw(guarantorId: string, amount: number): Vault {
+  const vault = getOrCreateVault(guarantorId);
+  const available = vault.collateralBalance - vault.lockedAmount;
+
+  if (amount <= 0) {
+    throw new Error("Withdrawal amount must be positive");
+  }
+
+  if (amount > available) {
+    throw new Error(
+      `Insufficient unlocked collateral. Available: ${available} USDC, requested: ${amount} USDC`,
+    );
+  }
+
+  vault.collateralBalance -= amount;
+  vaults.set(vault.id, vault);
+
+  logAuditEvent({
+    eventType: "VAULT",
+    action: "COLLATERAL_WITHDRAWN",
+    actor: guarantorId,
+    entityType: "vault",
+    entityId: vault.id,
+    details: { amount, newBalance: vault.collateralBalance },
+  });
+
+  return vault;
+}
+
+/**
+ * Get vault balance breakdown.
+ */
+export function getBalance(guarantorId: string): {
+  total: number;
+  locked: number;
+  available: number;
+} {
+  const vault = getOrCreateVault(guarantorId);
+  return {
+    total: vault.collateralBalance,
+    locked: vault.lockedAmount,
+    available: vault.collateralBalance - vault.lockedAmount,
+  };
+}
+
+/**
+ * Lock collateral in the vault for a new loan.
+ */
+export function lockCollateral(vaultId: string, amount: number): void {
+  const vault = vaults.get(vaultId);
+  if (!vault) {
+    throw new Error(`Vault ${vaultId} not found`);
+  }
+
+  const available = vault.collateralBalance - vault.lockedAmount;
+  if (amount > available) {
+    throw new Error(
+      `Insufficient collateral to lock. Available: ${available}, required: ${amount}`,
+    );
+  }
+
+  vault.lockedAmount += amount;
+  vaults.set(vaultId, vault);
+}
+
+/**
+ * Release collateral from the vault (on repayment).
+ */
+export function releaseCollateral(vaultId: string, amount: number): void {
+  const vault = vaults.get(vaultId);
+  if (!vault) {
+    throw new Error(`Vault ${vaultId} not found`);
+  }
+
+  vault.lockedAmount = Math.max(0, vault.lockedAmount - amount);
+  vaults.set(vaultId, vault);
+
+  logAuditEvent({
+    eventType: "VAULT",
+    action: "COLLATERAL_RELEASED",
+    entityType: "vault",
+    entityId: vaultId,
+    details: { amount, newLocked: vault.lockedAmount },
+  });
+}
