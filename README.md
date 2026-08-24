@@ -1,6 +1,6 @@
-# 🏠 StellarHomes Backend
+# 🔗 RemitCollateral Backend
 
-> Backend service for the StellarHomes platform — a Stellar/Soroban-powered real estate ecosystem enabling diaspora communities to invest in, build, and manage property back home through transparent, milestone-gated smart contracts.
+> Backend service for the RemitCollateral platform — Crypto-collateralized lending for local beneficiaries who never touch crypto.
 
 [![Built on Stellar](https://img.shields.io/badge/Built%20on-Stellar-blue?style=flat-square&logo=stellar)](https://stellar.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
@@ -8,17 +8,11 @@
 
 ---
 
-## Overview
+## System Overview
 
-StellarHomes bridges the gap between the African diaspora and real estate investment in their home countries. The backend orchestrates:
+RemitCollateral enables diaspora members to post USDC collateral on Stellar to secure loans for local beneficiaries (relatives, business contacts back home). Beneficiaries receive and repay in local currency via off-ramp partners (mobile money, bank transfer) without needing a crypto wallet or blockchain literacy.
 
-- **KYC/Identity verification** — Smile ID integration (mocked) for user onboarding
-- **Property registry** — Title submission, oracle-based verification, and valuation
-- **Mortgage pool** — Application, approval, milestone-gated disbursement, and repayment tracking
-- **Construction milestones** — Evidence submission and oracle verification for build progress
-- **Audit logging** — Platform-wide activity trail with filterable queries
-
-All financial flows are designed to settle on **Stellar** via **Soroban smart contracts** for escrow, tokenization, and pool management.
+The backend API serves as the orchestration layer between the frontend, Soroban smart contracts, and off-ramp partners.
 
 ---
 
@@ -30,7 +24,8 @@ All financial flows are designed to settle on **Stellar** via **Soroban smart co
 | Language | TypeScript 5.4 |
 | Framework | Express 4.x |
 | Blockchain | Stellar SDK 13.x / Soroban |
-| Database | PostgreSQL (via `pg`) — currently using in-memory stores for rapid prototyping |
+| Off-Ramp | `OffRampAdapter` interface (`MockOffRampAdapter` for dev/testing) |
+| Database | In-memory data stores (v1 prototype) |
 
 ---
 
@@ -62,13 +57,17 @@ PORT=4000
 STELLAR_NETWORK=testnet
 STELLAR_RPC_URL=https://soroban-testnet.stellar.org
 
-# Deployed Soroban Contract Addresses
-PROPERTY_REGISTRY_CONTRACT_ID=
-MORTGAGE_POOL_CONTRACT_ID=
-BUILD_ESCROW_CONTRACT_ID=
+# Soroban Contract Addresses
+GUARANTOR_VAULT_CONTRACT_ID=
+LOAN_LEDGER_CONTRACT_ID=
+LIQUIDATION_ENGINE_CONTRACT_ID=
 
-# Admin / Oracle configuration
-ADMIN_SECRET_KEY=S...
+# Off-Ramp Partner
+PARTNER_API_KEY=dev-partner-key-v1
+
+# Admin / Settlement
+ADMIN_WALLET_ADDRESS=G...
+SETTLEMENT_ADDRESS=GSETTLEMENTADDRESS1234567890
 ```
 
 ### Running
@@ -77,114 +76,104 @@ ADMIN_SECRET_KEY=S...
 # Development (hot-reload)
 npm run dev
 
-# Production build
+# Production build & start
 npm run build
 npm start
 ```
 
-The server starts at `http://localhost:4000`.
-
 ---
 
-## API Reference
+## API Reference (v1)
+
+All endpoints are prefixed with `/api/v1` (except `/health`).
 
 ### Health & Platform
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Service health check with uptime and network info |
-| `GET` | `/stats` | Platform stats and deployed contract addresses |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/health` | None | Service health, uptime, version |
 
-### KYC / Identity
+### Authentication
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/kyc/verify` | Submit KYC verification (Smile ID mock) |
-| `GET` | `/api/users/:address` | Get user profile by Stellar address |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/v1/auth/challenge` | None | Request signing challenge for wallet address |
+| `POST` | `/api/v1/auth/verify` | None | Submit signed challenge, receive session token |
 
-### Properties
+### Guarantors
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/properties/submit` | Submit a new property (Trustee) |
-| `GET` | `/api/properties/:id` | Get property details |
-| `POST` | `/api/properties/:id/verify-title` | Verify title via Land Registry Oracle |
-| `POST` | `/api/properties/:id/valuation` | Set property valuation (Surveyor/Oracle) |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/v1/guarantors` | Wallet | Register as a guarantor |
+| `GET` | `/api/v1/guarantors/me` | Wallet | Get own profile and vault summary |
+| `GET` | `/api/v1/guarantors/me/dashboard` | Wallet | Full dashboard data (loans, collateral, risk) |
 
-### Milestones
+### Vaults
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/properties/:id/milestones/submit` | Submit milestone evidence (Builder/Trustee) |
-| `POST` | `/api/properties/:id/milestones/verify` | Verify milestone (Oracle) |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/v1/vaults/deposit` | Wallet | Record a USDC deposit into guarantor's vault |
+| `POST` | `/api/v1/vaults/withdraw` | Wallet | Withdraw unlocked collateral |
+| `GET` | `/api/v1/vaults/me` | Wallet | Vault balance breakdown (total, locked, available) |
 
-### Mortgages
+### Beneficiaries
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/mortgages/apply` | Submit a mortgage application |
-| `GET` | `/api/mortgages/` | List mortgages (filter by `borrower`, `status`) |
-| `GET` | `/api/mortgages/:id` | Get mortgage details |
-| `POST` | `/api/mortgages/:id/approve` | Approve a mortgage application |
-| `POST` | `/api/mortgages/:id/disburse` | Disburse funds against a verified milestone |
-| `POST` | `/api/mortgages/:id/repay` | Record a repayment |
-| `GET` | `/api/mortgages/:id/repayments` | Get repayment history |
-| `GET` | `/api/mortgages/pool/stats` | Aggregate mortgage pool analytics |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/v1/beneficiaries` | Wallet | Register a beneficiary (phone + KYC ref) |
+| `GET` | `/api/v1/beneficiaries/:id` | Wallet | Get beneficiary details & reputation score |
+| `GET` | `/api/v1/beneficiaries/:id/reputation` | Wallet | Detailed reputation score breakdown |
 
-### Audit Log
+### Loans
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/api/audit/` | Query audit log (filter by `type`, `actor`, `entityId`; supports `limit`/`offset`) |
-| `GET` | `/api/audit/entity/:entityId` | Activity log for a specific property/mortgage |
-| `GET` | `/api/audit/actor/:address` | Activity log for a specific user |
-| `GET` | `/api/audit/summary` | Event count breakdown by type |
-| `POST` | `/api/audit/log` | Manually log an event |
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/v1/loans` | Wallet | Originate loan (checks vault, computes LTV, disburses) |
+| `GET` | `/api/v1/loans` | Wallet | List loans for authenticated guarantor |
+| `GET` | `/api/v1/loans/:id` | Wallet | Loan details with repayment status |
+| `GET` | `/api/v1/loans/:id/schedule` | Wallet | Full installment schedule |
+
+### Repayments
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/v1/repayments/attest` | Partner API key | Submit signed repayment attestation |
+| `GET` | `/api/v1/loans/:id/repayments` | Wallet | Repayment history for a loan |
+
+### Remittance History
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/v1/remittances` | Wallet | Record a remittance (self-declared / partner) |
+| `GET` | `/api/v1/remittances` | Wallet | List remittances for authenticated guarantor |
+| `POST` | `/api/v1/remittances/ingest` | Partner API key | Batch-import remittance history from partner |
+
+### Audit Trail
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/v1/audit` | Admin | Query audit log with filters |
+| `GET` | `/api/v1/audit/entity/:type/:id` | Admin | Activity log for specific entity |
 
 ---
 
 ## Project Structure
 
 ```
-stellar-homes-backend/
+remitcollateral-backend/
 ├── src/
-│   ├── index.ts        # Express entry point, middleware, health endpoints
-│   ├── routes.ts       # Core API — KYC, properties, milestones
-│   ├── mortgage.ts     # Mortgage lifecycle — apply, approve, disburse, repay
-│   └── audit.ts        # Platform-wide activity audit log
-├── .env.example        # Environment variable template
-├── tsconfig.json       # TypeScript configuration
-└── package.json        # Dependencies and scripts
+│   ├── config/             # Environment & protocol configuration
+│   ├── types/              # Domain entities, DTOs & adapter types
+│   ├── adapters/           # Off-ramp adapter interface & MockOffRampAdapter
+│   ├── stores/             # Centralized in-memory data stores
+│   ├── services/           # Business logic: reputation engine, loan, vault, audit
+│   ├── middleware/         # Auth middleware (wallet, partner API key, admin)
+│   ├── routes/             # Express API route modules
+│   └── index.ts            # Main application entry point
+├── .env.example
+├── tsconfig.json
+└── package.json
 ```
-
----
-
-## Architecture
-
-```
-┌─────────────┐     ┌──────────────────┐     ┌─────────────────────┐
-│  Frontend    │────▶│  Express API     │────▶│  Soroban Contracts  │
-│  (Next.js)   │     │  (this repo)     │     │  (Stellar Testnet)  │
-└─────────────┘     └──────────────────┘     └─────────────────────┘
-                           │
-                    ┌──────┴──────┐
-                    │  In-Memory  │  ← will migrate to PostgreSQL
-                    │   Stores    │
-                    └─────────────┘
-```
-
-**Smart Contracts (Soroban):**
-- `PropertyRegistry` — On-chain title registration and tokenization
-- `MortgagePool` — Pooled lending with interest accrual
-- `BuildEscrow` — Milestone-gated fund release for construction
-
----
-
-## Soroban Contract Integration
-
-The backend is designed to interact with three Soroban contracts deployed on Stellar. Contract IDs are configured via environment variables. The current implementation uses in-memory stores to mock contract state, making it easy to run locally without a blockchain dependency.
-
-To connect to live contracts, set the `*_CONTRACT_ID` variables in `.env` and the backend will route calls through the Stellar SDK.
 
 ---
 
