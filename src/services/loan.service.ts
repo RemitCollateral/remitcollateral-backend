@@ -1,0 +1,279 @@
+import { config } from "../config";
+import {
+  Loan,
+  InstallmentScheduleItem,
+  OriginateLoanDTO,
+  OffRampAttestation,
+} from "../types";
+import {
+  loans,
+  beneficiaries,
+  repaymentAttestations,
+  guarantorToVault,
+  vaults,
+  generateId,
+} from "../stores";
+import { OffRampAdapter } from "../adapters/offramp.interface";
+import { logAuditEvent } from "./audit.service";
+import * as vaultService from "./vault.service";
+import { computeAdjustedLtv, refreshReputationScore } from "./reputation.service";
+
+// ─── Module-level adapter reference ──────────────────────────────────
+
+let offRampAdapter: OffRampAdapter;
+
+export function setOffRampAdapter(adapter: OffRampAdapter): void {
+  offRampAdapter = adapter;
+}
+
+// ─── Loan Origination (§3.2) ─────────────────────────────────────────
+
+export async function originateLoan(
+  guarantorId: string,
+  dto: OriginateLoanDTO,
+): Promise<Loan> {
+  const beneficiary = beneficiaries.get(dto.beneficiaryId);
+  if (!beneficiary) throw new Error(`Beneficiary ${dto.beneficiaryId} not found`);
+
+  const vaultId = guarantorToVault.get(guarantorId);
+  if (!vaultId) throw new Error("No vault found. Deposit collateral first.");
+
+  const vault = vaults.get(vaultId);
+  if (!vault) throw new Error("Vault not found");
+
+  // Check for existing active loan for this beneficiary from this guarantor
+  const existingLoan = Array.from(loans.values()).find(
+    (l) =>
+      l.guarantorId === guarantorId &&
+      l.beneficiaryId === dto.beneficiaryId &&
+      (l.status === "active" || l.status === "grace"),
+  );
+  if (existingLoan) {
+    throw new Error("An active loan already exists for this beneficiary");
+  }
+
+  // Compute LTV from reputation (§8.3)
+  const ltvRatio = computeAdjustedLtv(dto.beneficiaryId);
+
+  // Convert principal to USD equivalent (simplified: 1:1 for USDC-denominated)
+  // In production, this would use an FX rate oracle
+  const principalUsd = dto.principalLocal; // Simplified for v1
+
+  // Required collateral = principal * LTV ratio
+  const requiredCollateral = principalUsd * ltvRatio;
+  const available = vault.collateralBalance - vault.lockedAmount;
+
+  if (available < requiredCollateral) {
+    throw new Error(
+      `Insufficient collateral. Required: ${requiredCollateral} USDC ` +
+      `(${principalUsd} × ${ltvRatio} LTV), available: ${available} USDC`,
+    );
+  }
+
+  // Generate installment schedule
+  const intervalDays = dto.installmentIntervalDays || 30;
+  const schedule = generateInstallmentSchedule(
+    dto.principalLocal,
+    principalUsd,
+    dto.installmentCount,
+    intervalDays,
+  );
+
+  // Create loan record
+  const loan: Loan = {
+    id: generateId(),
+    vaultId,
+    beneficiaryId: dto.beneficiaryId,
+    guarantorId,
+    principalLocal: dto.principalLocal,
+    principalUsd,
+    localCurrency: dto.localCurrency,
+    ltvRatio,
+    installmentCount: dto.installmentCount,
+    installmentIntervalDays: intervalDays,
+    schedule,
+    status: "active",
+    purpose: dto.purpose,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Lock collateral
+  vaultService.lockCollateral(vaultId, requiredCollateral);
+
+  // Persist the loan
+  loans.set(loan.id, loan);
+
+  // Disburse via off-ramp adapter
+  if (offRampAdapter) {
+    try {
+      await offRampAdapter.disburse({
+        loan_id: loan.id,
+        beneficiary_phone: beneficiary.phoneNumber,
+        beneficiary_kyc_ref: beneficiary.localKycRef,
+        amount_local: dto.principalLocal,
+        local_currency: dto.localCurrency,
+        idempotency_key: loan.id,
+      });
+    } catch (err) {
+      // Rollback: release collateral and remove loan
+      vaultService.releaseCollateral(vaultId, requiredCollateral);
+      loans.delete(loan.id);
+      throw new Error(`Disbursement failed: ${(err as Error).message}`);
+    }
+  }
+
+  logAuditEvent({
+    eventType: "LOAN",
+    action: "LOAN_ORIGINATED",
+    actor: guarantorId,
+    entityType: "loan",
+    entityId: loan.id,
+    details: {
+      beneficiaryId: dto.beneficiaryId,
+      principalLocal: dto.principalLocal,
+      localCurrency: dto.localCurrency,
+      ltvRatio,
+      collateralLocked: requiredCollateral,
+    },
+  });
+
+  return loan;
+}
+
+// ─── Repayment Attestation (§3.3) ────────────────────────────────────
+
+export async function processRepaymentAttestation(
+  attestation: OffRampAttestation,
+): Promise<{ loan: Loan; collateralReleased: number }> {
+  const loan = loans.get(attestation.loan_id);
+  if (!loan) throw new Error(`Loan ${attestation.loan_id} not found`);
+
+  if (loan.status !== "active" && loan.status !== "grace") {
+    throw new Error(`Cannot process repayment for loan with status: ${loan.status}`);
+  }
+
+  // Verify attestation signature via adapter
+  if (offRampAdapter) {
+    const valid = await offRampAdapter.verifyAttestation(attestation);
+    if (!valid) throw new Error("Invalid attestation signature");
+  }
+
+  // Record the attestation
+  const record = {
+    id: generateId(),
+    loanId: attestation.loan_id,
+    installmentNumber: attestation.installment_number,
+    amountLocal: attestation.amount_local,
+    amountUsd: attestation.amount_usd,
+    attestedBy: attestation.beneficiary_phone,
+    partnerSignature: attestation.partner_signature,
+    attestedAt: attestation.attested_at,
+    createdAt: new Date().toISOString(),
+  };
+  repaymentAttestations.push(record);
+
+  // Update schedule
+  const scheduleItem = loan.schedule.find(
+    (s) => s.installmentNumber === attestation.installment_number,
+  );
+  if (scheduleItem) {
+    scheduleItem.status = "repaid";
+    scheduleItem.repaidAt = attestation.attested_at;
+  }
+
+  // Compute collateral release (§3.4)
+  const collateralReleased = computeCollateralRelease(loan);
+
+  // Check if fully repaid
+  const allRepaid = loan.schedule.every((s) => s.status === "repaid");
+  if (allRepaid) {
+    loan.status = "repaid";
+    // Release remaining collateral including safety buffer
+    const totalLocked = loan.principalUsd * loan.ltvRatio;
+    vaultService.releaseCollateral(loan.vaultId, totalLocked);
+  } else if (collateralReleased > 0) {
+    vaultService.releaseCollateral(loan.vaultId, collateralReleased);
+  }
+
+  // If loan was in grace period and payment received, return to active
+  if (loan.status === "grace") {
+    loan.status = "active";
+    loan.graceExpiresAt = undefined;
+  }
+
+  loan.updatedAt = new Date().toISOString();
+  loans.set(loan.id, loan);
+
+  // Update beneficiary reputation (§8.4)
+  refreshReputationScore(loan.beneficiaryId);
+
+  logAuditEvent({
+    eventType: "REPAYMENT",
+    action: "ATTESTATION_PROCESSED",
+    entityType: "loan",
+    entityId: loan.id,
+    details: {
+      installmentNumber: attestation.installment_number,
+      amountLocal: attestation.amount_local,
+      amountUsd: attestation.amount_usd,
+      collateralReleased,
+      loanStatus: loan.status,
+    },
+  });
+
+  return { loan, collateralReleased };
+}
+
+// ─── Schedule Generation ─────────────────────────────────────────────
+
+function generateInstallmentSchedule(
+  principalLocal: number,
+  principalUsd: number,
+  count: number,
+  intervalDays: number,
+): InstallmentScheduleItem[] {
+  const amountLocal = Math.round((principalLocal / count) * 100) / 100;
+  const amountUsd = Math.round((principalUsd / count) * 100) / 100;
+  const schedule: InstallmentScheduleItem[] = [];
+
+  const now = new Date();
+  for (let i = 1; i <= count; i++) {
+    const dueDate = new Date(now);
+    dueDate.setDate(dueDate.getDate() + intervalDays * i);
+
+    schedule.push({
+      installmentNumber: i,
+      amountLocal: i === count ? principalLocal - amountLocal * (count - 1) : amountLocal,
+      amountUsd: i === count ? principalUsd - amountUsd * (count - 1) : amountUsd,
+      dueAt: dueDate.toISOString(),
+      status: "pending",
+    });
+  }
+
+  return schedule;
+}
+
+// ─── Collateral Release Calculation (§3.4) ───────────────────────────
+
+function computeCollateralRelease(loan: Loan): number {
+  const totalRepaid = loan.schedule
+    .filter((s) => s.status === "repaid")
+    .reduce((sum, s) => sum + s.amountUsd, 0);
+
+  const releasedRatio =
+    (totalRepaid / loan.principalUsd) * (1 - config.protocol.safetyBufferRatio);
+
+  const totalCollateral = loan.principalUsd * loan.ltvRatio;
+  const shouldBeReleased = totalCollateral * releasedRatio;
+
+  // Calculate how much has already been released (total locked = original - current)
+  const vault = vaults.get(loan.vaultId);
+  if (!vault) return 0;
+
+  // Return the incremental release amount
+  const previouslyReleased = totalCollateral - vault.lockedAmount;
+  const incrementalRelease = Math.max(0, shouldBeReleased - previouslyReleased);
+
+  return Math.round(incrementalRelease * 100) / 100;
+}
