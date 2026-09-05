@@ -89,6 +89,9 @@ export async function originateLoan(
     principalUsd,
     localCurrency: dto.localCurrency,
     ltvRatio,
+    collateralLockedUsd: requiredCollateral,
+    collateralReleasedUsd: 0,
+    collateralForfeitedUsd: 0,
     installmentCount: dto.installmentCount,
     installmentIntervalDays: intervalDays,
     schedule,
@@ -183,23 +186,31 @@ export async function processRepaymentAttestation(
   }
 
   // Compute collateral release (§3.4)
-  const collateralReleased = computeCollateralRelease(loan);
-
-  // Check if fully repaid
   const allRepaid = loan.schedule.every((s) => s.status === "repaid");
-  if (allRepaid) {
-    loan.status = "repaid";
-    // Release remaining collateral including safety buffer
-    const totalLocked = loan.principalUsd * loan.ltvRatio;
-    vaultService.releaseCollateral(loan.vaultId, totalLocked);
-  } else if (collateralReleased > 0) {
+
+  // On full repayment the safety buffer is released too, so the release is
+  // whatever is still locked rather than the pro-rata increment.
+  const collateralReleased = allRepaid
+    ? outstandingCollateral(loan)
+    : computeCollateralRelease(loan);
+
+  if (collateralReleased > 0) {
     vaultService.releaseCollateral(loan.vaultId, collateralReleased);
+    loan.collateralReleasedUsd =
+      Math.round((loan.collateralReleasedUsd + collateralReleased) * 100) / 100;
   }
 
-  // If loan was in grace period and payment received, return to active
-  if (loan.status === "grace") {
-    loan.status = "active";
+  if (allRepaid) {
+    loan.status = "repaid";
     loan.graceExpiresAt = undefined;
+  } else if (loan.status === "grace") {
+    // A payment during the grace period pulls the loan back to active, but
+    // only once no installment is still sitting overdue.
+    const stillOverdue = loan.schedule.some((s) => s.status === "overdue");
+    if (!stillOverdue) {
+      loan.status = "active";
+      loan.graceExpiresAt = undefined;
+    }
   }
 
   loan.updatedAt = new Date().toISOString();
@@ -256,7 +267,16 @@ function generateInstallmentSchedule(
 
 // ─── Collateral Release Calculation (§3.4) ───────────────────────────
 
-function computeCollateralRelease(loan: Loan): number {
+/**
+ * released_ratio = (total_repaid / total_principal) * (1 - safety_buffer)
+ *
+ * The ratio is cumulative, so the incremental release is measured against
+ * what this loan has already released. That figure is tracked on the loan
+ * itself rather than derived from the vault's locked balance: a vault backs
+ * one loan per beneficiary and may back several at once, so vault.lockedAmount
+ * is the sum across all of them and cannot attribute a release to one loan.
+ */
+export function computeCollateralRelease(loan: Loan): number {
   const totalRepaid = loan.schedule
     .filter((s) => s.status === "repaid")
     .reduce((sum, s) => sum + s.amountUsd, 0);
@@ -264,16 +284,23 @@ function computeCollateralRelease(loan: Loan): number {
   const releasedRatio =
     (totalRepaid / loan.principalUsd) * (1 - config.protocol.safetyBufferRatio);
 
-  const totalCollateral = loan.principalUsd * loan.ltvRatio;
-  const shouldBeReleased = totalCollateral * releasedRatio;
-
-  // Calculate how much has already been released (total locked = original - current)
-  const vault = vaults.get(loan.vaultId);
-  if (!vault) return 0;
-
-  // Return the incremental release amount
-  const previouslyReleased = totalCollateral - vault.lockedAmount;
-  const incrementalRelease = Math.max(0, shouldBeReleased - previouslyReleased);
+  const shouldBeReleased = loan.collateralLockedUsd * releasedRatio;
+  const incrementalRelease = Math.max(0, shouldBeReleased - loan.collateralReleasedUsd);
 
   return Math.round(incrementalRelease * 100) / 100;
+}
+
+/** Collateral still locked against this loan. */
+export function outstandingCollateral(loan: Loan): number {
+  const remaining =
+    loan.collateralLockedUsd - loan.collateralReleasedUsd - loan.collateralForfeitedUsd;
+  return Math.max(0, Math.round(remaining * 100) / 100);
+}
+
+/** Principal still owed on this loan, in USD. */
+export function outstandingPrincipal(loan: Loan): number {
+  const repaid = loan.schedule
+    .filter((s) => s.status === "repaid")
+    .reduce((sum, s) => sum + s.amountUsd, 0);
+  return Math.max(0, Math.round((loan.principalUsd - repaid) * 100) / 100);
 }

@@ -57,6 +57,9 @@ export interface Loan {
   principalUsd: number;
   localCurrency: string;
   ltvRatio: number;            // e.g. 1.50 (150%) or 1.10 (110%)
+  collateralLockedUsd: number;    // collateral locked at origination (principalUsd * ltvRatio)
+  collateralReleasedUsd: number;  // cumulative collateral released back to the guarantor
+  collateralForfeitedUsd: number; // cumulative collateral forfeited to settlement on default
   installmentCount: number;
   installmentIntervalDays: number;
   schedule: InstallmentScheduleItem[];
