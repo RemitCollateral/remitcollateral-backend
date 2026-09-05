@@ -116,9 +116,38 @@ remittanceRouter.post("/ingest", partnerAuth, (req: Request, res: Response) => {
 
   const beneficiariesToRefresh = new Set<string>();
 
-  for (const r of records) {
+  for (const [index, r] of records.entries()) {
     if (!r.guarantorId || !r.beneficiaryId || !r.amountUsd || !r.localAmount || !r.localCurrency || !r.sentAt) {
-      results.errors.push(`Skipped record: missing fields`);
+      results.errors.push(`Record ${index}: missing required fields`);
+      continue;
+    }
+
+    // Both parties must exist. An imported record naming an unknown
+    // beneficiary is silently unreachable — nothing ever reads it — while
+    // one naming an unknown guarantor still counts toward that beneficiary's
+    // remittance score under §8.2 at full partner weight, attributing a
+    // history to a relationship the protocol has no record of.
+    if (!guarantors.has(r.guarantorId)) {
+      results.errors.push(`Record ${index}: unknown guarantor ${r.guarantorId}`);
+      continue;
+    }
+    if (!beneficiaries.has(r.beneficiaryId)) {
+      results.errors.push(`Record ${index}: unknown beneficiary ${r.beneficiaryId}`);
+      continue;
+    }
+
+    const sentAt = new Date(r.sentAt);
+    if (Number.isNaN(sentAt.getTime())) {
+      results.errors.push(`Record ${index}: sentAt is not a valid date`);
+      continue;
+    }
+
+    // §8.2 scores frequency, consistency and duration off these timestamps.
+    // A future-dated record stretches the measured duration and skews the
+    // gaps between records, so the score it produces is not one the history
+    // actually supports.
+    if (sentAt.getTime() > Date.now()) {
+      results.errors.push(`Record ${index}: sentAt is in the future`);
       continue;
     }
 
@@ -139,13 +168,9 @@ remittanceRouter.post("/ingest", partnerAuth, (req: Request, res: Response) => {
     beneficiariesToRefresh.add(r.beneficiaryId);
   }
 
-  // Refresh reputation for all affected beneficiaries
+  // Refresh reputation for all affected beneficiaries (§8.4)
   for (const bId of beneficiariesToRefresh) {
-    try {
-      refreshReputationScore(bId);
-    } catch (_) {
-      // beneficiary may not exist yet
-    }
+    refreshReputationScore(bId);
   }
 
   logAuditEvent({
@@ -155,7 +180,9 @@ remittanceRouter.post("/ingest", partnerAuth, (req: Request, res: Response) => {
   });
 
   return res.json({
-    message: `Imported ${results.imported} remittance records`,
+    message:
+      `Imported ${results.imported} of ${records.length} remittance records` +
+      (results.errors.length > 0 ? `, ${results.errors.length} rejected` : ""),
     ...results,
   });
 });
