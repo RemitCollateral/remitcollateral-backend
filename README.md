@@ -25,6 +25,7 @@ The backend API serves as the orchestration layer between the frontend, Soroban 
 | Framework | Express 4.x |
 | Blockchain | Stellar SDK 13.x / Soroban |
 | Off-Ramp | `OffRampAdapter` interface (`MockOffRampAdapter` for dev/testing) |
+| Contracts | `ContractGateway` interface (`MockContractGateway` for dev/testing) |
 | Database | In-memory data stores (v1 prototype) |
 
 ---
@@ -65,10 +66,34 @@ LIQUIDATION_ENGINE_CONTRACT_ID=
 # Off-Ramp Partner
 PARTNER_API_KEY=dev-partner-key-v1
 
+# Off-Ramp Partner
+PARTNER_API_KEY=dev-partner-key-v1
+PARTNER_ID=mock-offramp-partner
+
 # Admin / Settlement
 ADMIN_WALLET_ADDRESS=G...
 SETTLEMENT_ADDRESS=GSETTLEMENTADDRESS1234567890
+
+# Scheduled jobs
+LIFECYCLE_SWEEP_INTERVAL_MINUTES=60
 ```
+
+#### Protocol parameters
+
+The LTV bounds, safety buffer, grace period and scoring weights are all
+overridable. Each falls back to the architecture's documented default when
+unset, so an empty `.env` runs the protocol exactly as specified.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `BASE_LTV_RATIO` | `1.50` | LTV required of an unknown beneficiary |
+| `MIN_LTV_RATIO` | `1.10` | Floor — no reputation score goes below this |
+| `LTV_REDUCTION_FACTOR` | `0.004` | LTV reduction per point of reputation score |
+| `SAFETY_BUFFER_RATIO` | `0.05` | Collateral retained until repayment completes |
+| `GRACE_PERIOD_DAYS` | `7` | Days after a missed installment before default |
+| `REMITTANCE_WEIGHT` | `0.40` | Weight of remittance history in the score |
+| `REPAYMENT_WEIGHT` | `0.60` | Weight of repayment history in the score |
+| `MIN_REMITTANCE_MONTHS` | `6` | History needed before remittances influence LTV |
 
 ### Running
 
@@ -155,6 +180,62 @@ All endpoints are prefixed with `/api/v1` (except `/health`).
 | `GET` | `/api/v1/audit` | Admin | Query audit log with filters |
 | `GET` | `/api/v1/audit/entity/:type/:id` | Admin | Activity log for specific entity |
 
+### Admin
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/api/v1/admin/liquidation/review` | Admin | Run the loan lifecycle sweep on demand |
+
+---
+
+## Loan Lifecycle
+
+Origination, repayment and collateral release are driven by requests. Default
+is not: nobody calls an endpoint when a payment fails to arrive, so overdue
+installments, grace-period expiry and default are detected by a scheduled
+sweep that runs every `LIFECYCLE_SWEEP_INTERVAL_MINUTES` and once at boot.
+
+```
+active ──── installment past due ────▶ grace ──── grace expires ────▶ defaulted
+   ▲                                     │
+   └────────── attested repayment ───────┘
+```
+
+On default, the outstanding principal is forfeited to `SETTLEMENT_ADDRESS`
+and collateral above that amount is unlocked and returned to the guarantor —
+collateral is posted at 110–150% LTV, so seizing all of it would take more
+than the protocol actually lost. The unpaid installments are recorded as
+missed, which is what lowers the beneficiary's reputation score; the penalty
+is not stored separately, so the score stays reproducible from the underlying
+records as the architecture requires.
+
+`POST /api/v1/admin/liquidation/review` runs the same sweep immediately. It
+takes no action on loans that need none, so it is safe to run at any time.
+
+> **Single-instance assumption.** The sweep runs in-process. Running more
+> than one instance would run it more than once per tick, so a multi-instance
+> deployment needs an external scheduler or a lock.
+
+---
+
+## Trust Boundaries
+
+Two rules in the architecture are enforced in code rather than by convention,
+and are worth stating because they constrain what callers can do:
+
+- **Remittance source is assigned, not accepted.** Anything recorded through
+  `POST /remittances` is stored as `self_declared` and carries 0.0 weight in
+  scoring. Only `POST /remittances/ingest`, behind the partner API key, writes
+  `partner_reported` records. A guarantor cannot raise a beneficiary's score,
+  and so cannot lower their own required LTV, by declaring remittances.
+- **Attestations are attributed to the authenticated partner.** The partner
+  identifier on a repayment comes from the API key that authenticated the
+  request, never from the request body.
+
+Wallet authentication is still the v1 header stub (`x-wallet-address`), not
+SEP-10 signing. Loan reads are scoped to the owning guarantor regardless, so
+ownership is enforced correctly once real signing replaces the header.
+
 ---
 
 ## Project Structure
@@ -165,8 +246,11 @@ remitcollateral-backend/
 │   ├── config/             # Environment & protocol configuration
 │   ├── types/              # Domain entities, DTOs & adapter types
 │   ├── adapters/           # Off-ramp adapter interface & MockOffRampAdapter
+│   ├── contracts/          # ContractGateway interface & MockContractGateway
 │   ├── stores/             # Centralized in-memory data stores
-│   ├── services/           # Business logic: reputation engine, loan, vault, audit
+│   ├── services/           # Loan, vault, liquidation, reputation, remittance,
+│   │                       #   notification & audit logic
+│   ├── jobs/               # Scheduled loan lifecycle sweep
 │   ├── middleware/         # Auth middleware (wallet, partner API key, admin)
 │   ├── routes/             # Express API route modules
 │   └── index.ts            # Main application entry point
