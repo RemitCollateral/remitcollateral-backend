@@ -4,13 +4,14 @@ import { Beneficiary } from "../types";
 import { beneficiaries, generateId } from "../stores";
 import { logAuditEvent } from "../services/audit.service";
 import { getReputationBreakdown } from "../services/reputation.service";
+import { seedRemittanceHistory } from "../services/remittance.service";
 
 export const beneficiaryRouter = Router();
 
 /**
  * POST /beneficiaries — Register a beneficiary (phone + KYC ref).
  */
-beneficiaryRouter.post("/", walletAuth, (req: Request, res: Response) => {
+beneficiaryRouter.post("/", walletAuth, async (req: Request, res: Response) => {
   const walletAddress = (req as any).walletAddress as string;
   const { phoneNumber, localKycRef } = req.body;
 
@@ -50,9 +51,30 @@ beneficiaryRouter.post("/", walletAuth, (req: Request, res: Response) => {
     details: { phoneNumber },
   });
 
+  // §8.2 — pull whatever history the partner already holds for this pair, so
+  // the beneficiary starts with the cold-start signal rather than at zero.
+  // Only possible for a registered guarantor, since a remittance record has
+  // to be attributed to one.
+  const guarantorId = (req as any).guarantorId as string | undefined;
+  const seeded = guarantorId
+    ? await seedRemittanceHistory(
+        guarantorId,
+        walletAddress,
+        beneficiary.id,
+        beneficiary.phoneNumber,
+      )
+    : 0;
+
   return res.status(201).json({
     message: "Beneficiary registered successfully",
-    beneficiary,
+    beneficiary: beneficiaries.get(beneficiary.id),
+    remittanceHistory: {
+      recordsImported: seeded,
+      note:
+        seeded > 0
+          ? "Partner-reported remittance history was imported and the reputation score updated."
+          : "No partner-reported remittance history was available for this pair.",
+    },
   });
 });
 

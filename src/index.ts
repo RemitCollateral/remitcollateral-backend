@@ -5,6 +5,7 @@ import { logAuditEvent } from "./services/audit.service";
 import * as loanService from "./services/loan.service";
 import * as vaultService from "./services/vault.service";
 import * as liquidationService from "./services/liquidation.service";
+import * as remittanceService from "./services/remittance.service";
 import { MockOffRampAdapter } from "./adapters/mock-offramp.adapter";
 import { MockContractGateway } from "./contracts/mock-gateway";
 import { startLifecycleJob, stopLifecycleJob } from "./jobs/lifecycle.job";
@@ -32,6 +33,7 @@ const offRampAdapter = new MockOffRampAdapter();
 const contractGateway = new MockContractGateway();
 
 loanService.setOffRampAdapter(offRampAdapter);
+remittanceService.setOffRampAdapter(offRampAdapter);
 loanService.setContractGateway(contractGateway);
 vaultService.setContractGateway(contractGateway);
 liquidationService.setContractGateway(contractGateway);
