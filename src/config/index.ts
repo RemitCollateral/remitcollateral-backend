@@ -37,6 +37,7 @@ export const config = {
 
   // Partner auth
   partnerApiKey: process.env.PARTNER_API_KEY || "dev-partner-key-v1",
+  partnerId: process.env.PARTNER_ID || "mock-offramp-partner",
 
   // Auth
   challengeExpirySeconds: 300,   // 5 minutes

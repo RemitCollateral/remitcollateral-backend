@@ -148,6 +148,7 @@ export async function originateLoan(
 
 export async function processRepaymentAttestation(
   attestation: OffRampAttestation,
+  attestedBy: string,
 ): Promise<{ loan: Loan; collateralReleased: number }> {
   const loan = loans.get(attestation.loan_id);
   if (!loan) throw new Error(`Loan ${attestation.loan_id} not found`);
@@ -169,7 +170,7 @@ export async function processRepaymentAttestation(
     installmentNumber: attestation.installment_number,
     amountLocal: attestation.amount_local,
     amountUsd: attestation.amount_usd,
-    attestedBy: attestation.beneficiary_phone,
+    attestedBy,
     partnerSignature: attestation.partner_signature,
     attestedAt: attestation.attested_at,
     createdAt: new Date().toISOString(),

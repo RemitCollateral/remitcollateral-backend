@@ -49,6 +49,11 @@ export function partnerAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
 
+  // The partner identity comes from the key that authenticated the request,
+  // never from the request body — otherwise one partner could sign an
+  // attestation into another partner's name.
+  (req as any).partnerId = config.partnerId;
+
   next();
 }
 

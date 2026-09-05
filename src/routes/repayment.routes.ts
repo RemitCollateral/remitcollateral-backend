@@ -21,15 +21,18 @@ repaymentRouter.post("/attest", partnerAuth, async (req: Request, res: Response)
   }
 
   try {
-    const result = await loanService.processRepaymentAttestation({
-      loan_id: loanId,
-      installment_number: installmentNumber,
-      amount_local: amountLocal,
-      amount_usd: amountUsd,
-      beneficiary_phone: beneficiaryPhone || "",
-      attested_at: attestedAt || new Date().toISOString(),
-      partner_signature: partnerSignature,
-    });
+    const result = await loanService.processRepaymentAttestation(
+      {
+        loan_id: loanId,
+        installment_number: installmentNumber,
+        amount_local: amountLocal,
+        amount_usd: amountUsd,
+        beneficiary_phone: beneficiaryPhone || "",
+        attested_at: attestedAt || new Date().toISOString(),
+        partner_signature: partnerSignature,
+      },
+      (req as any).partnerId as string,
+    );
 
     return res.json({
       message: "Repayment attestation processed successfully",
