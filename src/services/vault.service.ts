@@ -136,6 +136,40 @@ export function lockCollateral(vaultId: string, amount: number): void {
 }
 
 /**
+ * Forfeit collateral on a defaulted loan (§3.5).
+ *
+ * Unlike a release, forfeited collateral leaves the vault entirely: it is
+ * transferred to the platform settlement address, so both the locked amount
+ * and the total balance are reduced. The caller is responsible for the
+ * on-chain transfer via the contract gateway.
+ */
+export function forfeitCollateral(vaultId: string, amount: number): void {
+  const vault = vaults.get(vaultId);
+  if (!vault) {
+    throw new Error(`Vault ${vaultId} not found`);
+  }
+
+  const forfeited = Math.min(amount, vault.lockedAmount, vault.collateralBalance);
+
+  vault.lockedAmount = Math.max(0, vault.lockedAmount - forfeited);
+  vault.collateralBalance = Math.max(0, vault.collateralBalance - forfeited);
+  vaults.set(vaultId, vault);
+
+  logAuditEvent({
+    eventType: "VAULT",
+    action: "COLLATERAL_FORFEITED",
+    entityType: "vault",
+    entityId: vaultId,
+    details: {
+      requested: amount,
+      forfeited,
+      newBalance: vault.collateralBalance,
+      newLocked: vault.lockedAmount,
+    },
+  });
+}
+
+/**
  * Release collateral from the vault (on repayment).
  */
 export function releaseCollateral(vaultId: string, amount: number): void {
