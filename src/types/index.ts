@@ -193,3 +193,26 @@ export interface AuthChallenge {
   challenge: string;
   expiresAt: string;
 }
+
+// ─── Contract Gateway Types (§10) ───────────────────────────────────
+
+export interface ContractCallResult {
+  success: boolean;
+  /** Stellar transaction hash, or a simulated reference under the mock gateway. */
+  txHash: string;
+  /** Soroban contract the call was routed to. */
+  contract: "GuarantorVault" | "LoanLedger" | "LiquidationEngine";
+  /** Contract function invoked. */
+  method: string;
+  ledgerAt: string;
+  failureReason?: string;
+}
+
+export interface CollateralPosition {
+  vaultId: string;
+  collateralBalance: number;
+  lockedAmount: number;
+  availableAmount: number;
+  /** Locked amount attributed to each loan the vault backs. */
+  perLoanLocked: Record<string, number>;
+}
