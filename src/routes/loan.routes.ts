@@ -69,7 +69,9 @@ loanRouter.get("/:id", walletAuth, (req: Request, res: Response) => {
   const { id } = req.params;
   const loan = loans.get(id);
 
-  if (!loan) {
+  if (!loan || loan.guarantorId !== (req as any).guarantorId) {
+    // Not distinguished from "not found": telling a caller that a loan
+    // exists but belongs to someone else leaks that it exists at all.
     return res.status(404).json({ error: "Loan not found" });
   }
 
@@ -96,7 +98,7 @@ loanRouter.get("/:id/schedule", walletAuth, (req: Request, res: Response) => {
   const { id } = req.params;
   const loan = loans.get(id);
 
-  if (!loan) {
+  if (!loan || loan.guarantorId !== (req as any).guarantorId) {
     return res.status(404).json({ error: "Loan not found" });
   }
 

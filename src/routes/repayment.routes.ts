@@ -55,7 +55,7 @@ repaymentRouter.get(
     const { loanId } = req.params;
     const loan = loans.get(loanId);
 
-    if (!loan) {
+    if (!loan || loan.guarantorId !== (req as any).guarantorId) {
       return res.status(404).json({ error: "Loan not found" });
     }
 
