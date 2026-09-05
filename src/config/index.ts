@@ -27,6 +27,14 @@ export const config = {
     settlementAddress: process.env.SETTLEMENT_ADDRESS || "GSETTLEMENTADDRESS1234567890",
   },
 
+  // Scheduled jobs (§7.3)
+  jobs: {
+    lifecycleIntervalMinutes: parseInt(
+      process.env.LIFECYCLE_SWEEP_INTERVAL_MINUTES || "60",
+      10,
+    ),
+  },
+
   // Partner auth
   partnerApiKey: process.env.PARTNER_API_KEY || "dev-partner-key-v1",
 
