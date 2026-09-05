@@ -1,6 +1,6 @@
 import { Router, Request, Response } from "express";
 import { walletAuth, partnerAuth } from "../middleware/auth.middleware";
-import { RemittanceRecord } from "../types";
+import { RemittanceRecord, RemittanceSource } from "../types";
 import {
   remittanceRecords,
   beneficiaries,
@@ -22,19 +22,20 @@ remittanceRouter.post("/", walletAuth, (req: Request, res: Response) => {
     return res.status(404).json({ error: "Guarantor not found. Register first." });
   }
 
-  const { beneficiaryId, amountUsd, localAmount, localCurrency, source, sentAt } = req.body;
+  const { beneficiaryId, amountUsd, localAmount, localCurrency, sentAt } = req.body;
 
-  if (!beneficiaryId || !amountUsd || !localAmount || !localCurrency || !source || !sentAt) {
+  if (!beneficiaryId || !amountUsd || !localAmount || !localCurrency || !sentAt) {
     return res.status(400).json({
-      error: "Missing required fields: beneficiaryId, amountUsd, localAmount, localCurrency, source, sentAt",
+      error: "Missing required fields: beneficiaryId, amountUsd, localAmount, localCurrency, sentAt",
     });
   }
 
-  if (source !== "partner_reported" && source !== "self_declared") {
-    return res.status(400).json({
-      error: "source must be 'partner_reported' or 'self_declared'",
-    });
-  }
+  // §9.2 — the protocol does not trust guarantor claims. Anything recorded
+  // on a wallet-authenticated request is self-declared by definition; only
+  // POST /remittances/ingest, behind the partner API key, may write
+  // partner_reported records. The source is therefore assigned here rather
+  // than accepted from the body.
+  const source: RemittanceSource = "self_declared";
 
   const beneficiary = beneficiaries.get(beneficiaryId);
   if (!beneficiary) {
@@ -68,7 +69,9 @@ remittanceRouter.post("/", walletAuth, (req: Request, res: Response) => {
   });
 
   return res.status(201).json({
-    message: "Remittance recorded successfully",
+    message:
+      "Remittance recorded as self-declared. Self-declared records are weighted " +
+      "at 0.0 in v1 scoring (§8.2) and do not affect the reputation score.",
     remittance: record,
   });
 });
