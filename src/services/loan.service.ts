@@ -14,16 +14,23 @@ import {
   generateId,
 } from "../stores";
 import { OffRampAdapter } from "../adapters/offramp.interface";
+import { ContractGateway } from "../contracts/gateway.interface";
 import { logAuditEvent } from "./audit.service";
 import * as vaultService from "./vault.service";
+import * as notifications from "./notification.service";
 import { computeAdjustedLtv, refreshReputationScore } from "./reputation.service";
 
-// ─── Module-level adapter reference ──────────────────────────────────
+// ─── Module-level adapter references ─────────────────────────────────
 
 let offRampAdapter: OffRampAdapter;
+let contractGateway: ContractGateway | undefined;
 
 export function setOffRampAdapter(adapter: OffRampAdapter): void {
   offRampAdapter = adapter;
+}
+
+export function setContractGateway(gateway: ContractGateway): void {
+  contractGateway = gateway;
 }
 
 // ─── Loan Origination (§3.2) ─────────────────────────────────────────
@@ -101,11 +108,27 @@ export async function originateLoan(
     updatedAt: new Date().toISOString(),
   };
 
-  // Lock collateral
+  // Lock collateral, on chain first so a contract rejection stops the loan
+  // before any local state claims the collateral is spoken for.
+  if (contractGateway) {
+    const locked = await contractGateway.lockCollateral(
+      vaultId,
+      loan.id,
+      requiredCollateral,
+    );
+    if (!locked.success) {
+      throw new Error(`Could not lock collateral: ${locked.failureReason}`);
+    }
+  }
+
   vaultService.lockCollateral(vaultId, requiredCollateral);
 
   // Persist the loan
   loans.set(loan.id, loan);
+
+  if (contractGateway) {
+    await contractGateway.recordLoan(loan.id, vaultId, principalUsd, ltvRatio);
+  }
 
   // Disburse via off-ramp adapter
   if (offRampAdapter) {
@@ -118,8 +141,16 @@ export async function originateLoan(
         local_currency: dto.localCurrency,
         idempotency_key: loan.id,
       });
+      // §3.2 step 5 — the beneficiary has no wallet and no dashboard, so
+      // the SMS is the only way they learn the schedule they must repay on.
+      notifications.notifyLoanDisbursed(loan, beneficiary);
     } catch (err) {
-      // Rollback: release collateral and remove loan
+      // Rollback: unwind the on-chain lock as well as the local one, or the
+      // guarantor's collateral stays locked against a loan that never existed.
+      if (contractGateway) {
+        await contractGateway.releaseCollateral(vaultId, loan.id, requiredCollateral);
+        await contractGateway.closeLoan(loan.id, "defaulted");
+      }
       vaultService.releaseCollateral(vaultId, requiredCollateral);
       loans.delete(loan.id);
       throw new Error(`Disbursement failed: ${(err as Error).message}`);
@@ -195,7 +226,26 @@ export async function processRepaymentAttestation(
     ? outstandingCollateral(loan)
     : computeCollateralRelease(loan);
 
+  if (contractGateway) {
+    await contractGateway.recordRepayment(
+      loan.id,
+      attestation.installment_number,
+      attestation.amount_usd,
+    );
+  }
+
   if (collateralReleased > 0) {
+    if (contractGateway) {
+      const released = await contractGateway.releaseCollateral(
+        loan.vaultId,
+        loan.id,
+        collateralReleased,
+      );
+      if (!released.success) {
+        throw new Error(`Could not release collateral: ${released.failureReason}`);
+      }
+    }
+
     vaultService.releaseCollateral(loan.vaultId, collateralReleased);
     loan.collateralReleasedUsd =
       Math.round((loan.collateralReleasedUsd + collateralReleased) * 100) / 100;
@@ -217,8 +267,19 @@ export async function processRepaymentAttestation(
   loan.updatedAt = new Date().toISOString();
   loans.set(loan.id, loan);
 
+  if (allRepaid && contractGateway) {
+    await contractGateway.closeLoan(loan.id, "repaid");
+  }
+
   // Update beneficiary reputation (§8.4)
   refreshReputationScore(loan.beneficiaryId);
+
+  if (allRepaid) {
+    const beneficiary = beneficiaries.get(loan.beneficiaryId);
+    if (beneficiary) {
+      notifications.notifyLoanRepaid(loan, beneficiary);
+    }
+  }
 
   logAuditEvent({
     eventType: "REPAYMENT",

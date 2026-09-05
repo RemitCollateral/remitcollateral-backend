@@ -2,9 +2,19 @@ import { Vault } from "../types";
 import {
   vaults,
   guarantorToVault,
+  guarantors,
   generateId,
 } from "../stores";
+import { ContractGateway } from "../contracts/gateway.interface";
 import { logAuditEvent } from "./audit.service";
+
+// ─── Module-level gateway reference ──────────────────────────────────
+
+let contractGateway: ContractGateway | undefined;
+
+export function setContractGateway(gateway: ContractGateway): void {
+  contractGateway = gateway;
+}
 
 // ─── Service ─────────────────────────────────────────────────────────
 
@@ -44,11 +54,28 @@ export function getOrCreateVault(guarantorId: string): Vault {
 /**
  * Deposit USDC into the guarantor's vault.
  */
-export function deposit(guarantorId: string, amount: number, txHash?: string): Vault {
+export async function deposit(
+  guarantorId: string,
+  amount: number,
+  txHash?: string,
+): Promise<Vault> {
   const vault = getOrCreateVault(guarantorId);
 
   if (amount <= 0) {
     throw new Error("Deposit amount must be positive");
+  }
+
+  if (contractGateway) {
+    const guarantor = guarantors.get(guarantorId);
+    const result = await contractGateway.depositCollateral(
+      vault.id,
+      guarantor?.walletAddress || guarantorId,
+      amount,
+      txHash,
+    );
+    if (!result.success) {
+      throw new Error(`Deposit rejected on chain: ${result.failureReason}`);
+    }
   }
 
   vault.collateralBalance += amount;
@@ -70,7 +97,11 @@ export function deposit(guarantorId: string, amount: number, txHash?: string): V
  * Withdraw unlocked collateral from the guarantor's vault.
  * Only the unlocked portion (balance - locked) can be withdrawn.
  */
-export function withdraw(guarantorId: string, amount: number): Vault {
+export async function withdraw(
+  guarantorId: string,
+  amount: number,
+  destinationAddress: string,
+): Promise<Vault> {
   const vault = getOrCreateVault(guarantorId);
   const available = vault.collateralBalance - vault.lockedAmount;
 
@@ -84,6 +115,20 @@ export function withdraw(guarantorId: string, amount: number): Vault {
     );
   }
 
+  // Settle on chain before debiting locally: if the transfer is rejected the
+  // balance must stay as it was, or the guarantor loses collateral that was
+  // never actually moved.
+  if (contractGateway) {
+    const result = await contractGateway.withdrawCollateral(
+      vault.id,
+      destinationAddress,
+      amount,
+    );
+    if (!result.success) {
+      throw new Error(`Withdrawal rejected on chain: ${result.failureReason}`);
+    }
+  }
+
   vault.collateralBalance -= amount;
   vaults.set(vault.id, vault);
 
@@ -93,7 +138,7 @@ export function withdraw(guarantorId: string, amount: number): Vault {
     actor: guarantorId,
     entityType: "vault",
     entityId: vault.id,
-    details: { amount, newBalance: vault.collateralBalance },
+    details: { amount, destinationAddress, newBalance: vault.collateralBalance },
   });
 
   return vault;

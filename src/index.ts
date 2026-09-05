@@ -2,8 +2,12 @@ import express from "express";
 import cors from "cors";
 import { config } from "./config";
 import { logAuditEvent } from "./services/audit.service";
-import { setOffRampAdapter } from "./services/loan.service";
+import * as loanService from "./services/loan.service";
+import * as vaultService from "./services/vault.service";
+import * as liquidationService from "./services/liquidation.service";
 import { MockOffRampAdapter } from "./adapters/mock-offramp.adapter";
+import { MockContractGateway } from "./contracts/mock-gateway";
+import { startLifecycleJob, stopLifecycleJob } from "./jobs/lifecycle.job";
 
 // Route modules
 import { healthRouter } from "./routes/health.routes";
@@ -20,8 +24,16 @@ import { auditRouter } from "./routes/audit.routes";
 
 const app = express();
 
-// Initialize off-ramp adapter (v1: mock)
-setOffRampAdapter(new MockOffRampAdapter());
+// Initialize the off-ramp adapter and the Soroban contract gateway. V1 ships
+// mocks for both; swapping in live implementations here is the only change
+// needed once the partner integration and remitcollateral-contracts land.
+const offRampAdapter = new MockOffRampAdapter();
+const contractGateway = new MockContractGateway();
+
+loanService.setOffRampAdapter(offRampAdapter);
+loanService.setContractGateway(contractGateway);
+vaultService.setContractGateway(contractGateway);
+liquidationService.setContractGateway(contractGateway);
 
 // ─── Middleware ───────────────────────────────────────────────────────
 
@@ -74,7 +86,7 @@ app.use(
 
 // ─── Start Server ────────────────────────────────────────────────────
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   console.log(`\n🔗 RemitCollateral Backend running on http://localhost:${config.port}`);
   console.log(`📡 Network: ${config.stellarNetwork}`);
   console.log(`❤️  Health: http://localhost:${config.port}/health`);
@@ -87,8 +99,25 @@ app.listen(config.port, () => {
       port: config.port,
       network: config.stellarNetwork,
       adapter: "MockOffRampAdapter",
+      contractGateway: "MockContractGateway",
     },
   });
+
+  // §7.3 — overdue installments, grace expiry and default are detected on
+  // the backend's own clock, so the sweep has to be running for the loan
+  // lifecycle to advance at all.
+  startLifecycleJob();
 });
+
+// ─── Shutdown ────────────────────────────────────────────────────────
+
+function shutdown(signal: string): void {
+  console.log(`\n[Server]: ${signal} received, shutting down`);
+  stopLifecycleJob();
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 export default app;

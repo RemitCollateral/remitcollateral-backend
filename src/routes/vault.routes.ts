@@ -7,7 +7,7 @@ export const vaultRouter = Router();
 /**
  * POST /vaults/deposit — Record a USDC deposit into the guarantor's vault.
  */
-vaultRouter.post("/deposit", walletAuth, (req: Request, res: Response) => {
+vaultRouter.post("/deposit", walletAuth, async (req: Request, res: Response) => {
   const guarantorId = (req as any).guarantorId as string;
   if (!guarantorId) {
     return res.status(404).json({ error: "Guarantor not found. Register first." });
@@ -20,7 +20,7 @@ vaultRouter.post("/deposit", walletAuth, (req: Request, res: Response) => {
   }
 
   try {
-    const vault = vaultService.deposit(guarantorId, amountUsd, txHash);
+    const vault = await vaultService.deposit(guarantorId, amountUsd, txHash);
     return res.json({
       message: `${amountUsd} USDC deposited successfully`,
       vault: {
@@ -37,7 +37,7 @@ vaultRouter.post("/deposit", walletAuth, (req: Request, res: Response) => {
 /**
  * POST /vaults/withdraw — Withdraw unlocked collateral.
  */
-vaultRouter.post("/withdraw", walletAuth, (req: Request, res: Response) => {
+vaultRouter.post("/withdraw", walletAuth, async (req: Request, res: Response) => {
   const guarantorId = (req as any).guarantorId as string;
   if (!guarantorId) {
     return res.status(404).json({ error: "Guarantor not found. Register first." });
@@ -54,7 +54,7 @@ vaultRouter.post("/withdraw", walletAuth, (req: Request, res: Response) => {
   }
 
   try {
-    const vault = vaultService.withdraw(guarantorId, amountUsd);
+    const vault = await vaultService.withdraw(guarantorId, amountUsd, destinationAddress);
     return res.json({
       message: `${amountUsd} USDC withdrawn to ${destinationAddress}`,
       vault: {
