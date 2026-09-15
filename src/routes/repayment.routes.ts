@@ -2,6 +2,7 @@ import { Router, Request, Response } from "express";
 import { walletAuth, partnerAuth } from "../middleware/auth.middleware";
 import { loans, repaymentAttestations } from "../stores";
 import * as loanService from "../services/loan.service";
+import { serializeAttestation } from "../api/serializers";
 
 export const repaymentRouter = Router();
 
@@ -63,10 +64,10 @@ repaymentRouter.get(
       (a) => a.loanId === loanId,
     );
 
-    return res.json({
-      loanId,
-      total: attestations.length,
-      repayments: attestations,
-    });
+    return res.json(
+      attestations
+        .sort((a, b) => b.attestedAt.localeCompare(a.attestedAt))
+        .map(serializeAttestation),
+    );
   },
 );

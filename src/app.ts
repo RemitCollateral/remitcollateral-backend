@@ -44,6 +44,22 @@ liquidationService.setContractGateway(contractGateway);
 app.use(cors());
 app.use(express.json());
 
+// Error bodies carry their reason as `message` as well as `error`: every route
+// sets `error`, and the frontend reads `message`.
+app.use((_req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = ((body?: unknown) => {
+    if (res.statusCode >= 400 && body && typeof body === "object" && !Array.isArray(body)) {
+      const fields = body as Record<string, unknown>;
+      if (typeof fields.error === "string" && fields.message === undefined) {
+        return json({ ...fields, message: fields.error });
+      }
+    }
+    return json(body);
+  }) as typeof res.json;
+  next();
+});
+
 // Request logging
 app.use((req, _res, next) => {
   if (process.env.NODE_ENV !== "test") {

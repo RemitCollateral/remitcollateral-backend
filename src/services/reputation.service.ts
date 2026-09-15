@@ -116,6 +116,18 @@ export function refreshReputationScore(beneficiaryId: string): number {
   return newScore;
 }
 
+/**
+ * Months between a beneficiary's first and latest partner-reported remittance:
+ * the span the remittance score is measured over.
+ */
+export function remittanceHistoryMonths(beneficiaryId: string): number {
+  const times = remittanceRecords
+    .filter((r) => r.beneficiaryId === beneficiaryId && r.source === "partner_reported")
+    .map((r) => new Date(r.sentAt).getTime());
+  if (times.length < 2) return 0;
+  return (Math.max(...times) - Math.min(...times)) / (1000 * 60 * 60 * 24 * 30);
+}
+
 export function getReputationBreakdown(beneficiaryId: string) {
   const remittanceScore = computeRemittanceConsistencyScore(beneficiaryId);
   const repaymentScore = computeRepaymentScore(beneficiaryId);
@@ -126,14 +138,18 @@ export function getReputationBreakdown(beneficiaryId: string) {
     (r) => r.beneficiaryId === beneficiaryId && r.source === "partner_reported",
   ).length;
 
-  const totalLoans = Array.from(loans.values()).filter(
+  const beneficiaryLoans = Array.from(loans.values()).filter(
     (l) => l.beneficiaryId === beneficiaryId,
-  ).length;
+  );
 
   return {
     compositeScore, remittanceScore, repaymentScore, adjustedLtv,
     remittanceWeight: config.protocol.remittanceWeight,
     repaymentWeight: config.protocol.repaymentWeight,
-    totalPartnerRemittances, totalLoans,
+    totalPartnerRemittances,
+    totalLoans: beneficiaryLoans.length,
+    historyMonths: remittanceHistoryMonths(beneficiaryId),
+    loansCompleted: beneficiaryLoans.filter((l) => l.status === "repaid").length,
+    loansDefaulted: beneficiaryLoans.filter((l) => l.status === "defaulted").length,
   };
 }

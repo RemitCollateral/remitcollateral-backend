@@ -5,31 +5,39 @@ import { beneficiaries, generateId } from "../stores";
 import { logAuditEvent } from "../services/audit.service";
 import { getReputationBreakdown } from "../services/reputation.service";
 import { seedRemittanceHistory } from "../services/remittance.service";
+import { serializeBeneficiary, serializeReputation } from "../api/serializers";
 
 export const beneficiaryRouter = Router();
 
+const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+
 /**
- * POST /beneficiaries — Register a beneficiary (phone + KYC ref).
+ * POST /beneficiaries — Register a beneficiary.
+ *   { phone_number, local_kyc_ref, local_currency, display_name? }
  */
 beneficiaryRouter.post("/", walletAuth, async (req: Request, res: Response) => {
   const walletAddress = (req as any).walletAddress as string;
-  const { phoneNumber, localKycRef } = req.body;
+  const phoneNumber = text(req.body?.phone_number);
+  const localKycRef = text(req.body?.local_kyc_ref);
+  const localCurrency = text(req.body?.local_currency).toUpperCase();
+  const displayName = text(req.body?.display_name) || undefined;
 
   if (!phoneNumber || !localKycRef) {
     return res.status(400).json({
-      error: "Missing required fields: phoneNumber, localKycRef",
+      error:
+        "phone_number and local_kyc_ref are required. The KYC reference comes from your off-ramp partner.",
     });
   }
+  if (!/^[A-Z]{3}$/.test(localCurrency)) {
+    return res.status(400).json({ error: "local_currency must be an ISO 4217 code, e.g. NGN" });
+  }
 
-  // Check for duplicate phone number
-  const existing = Array.from(beneficiaries.values()).find(
-    (b) => b.phoneNumber === phoneNumber,
-  );
-  if (existing) {
-    return res.status(409).json({
-      error: "A beneficiary with this phone number already exists",
-      beneficiary: existing,
-    });
+  // The existing record is not returned: it may belong to another guarantor,
+  // and echoing it would disclose their beneficiary's details to anyone who
+  // tries a phone number.
+  const taken = Array.from(beneficiaries.values()).some((b) => b.phoneNumber === phoneNumber);
+  if (taken) {
+    return res.status(409).json({ error: "A beneficiary with this phone number already exists" });
   }
 
   const beneficiary: Beneficiary = {
@@ -37,9 +45,10 @@ beneficiaryRouter.post("/", walletAuth, async (req: Request, res: Response) => {
     phoneNumber,
     localKycRef,
     reputationScore: 0,
+    displayName,
+    localCurrency,
     createdAt: new Date().toISOString(),
   };
-
   beneficiaries.set(beneficiary.id, beneficiary);
 
   logAuditEvent({
@@ -53,60 +62,32 @@ beneficiaryRouter.post("/", walletAuth, async (req: Request, res: Response) => {
 
   // §8.2 — pull whatever history the partner already holds for this pair, so
   // the beneficiary starts with the cold-start signal rather than at zero.
-  // Only possible for a registered guarantor, since a remittance record has
-  // to be attributed to one.
   const guarantorId = (req as any).guarantorId as string | undefined;
-  const seeded = guarantorId
-    ? await seedRemittanceHistory(
-        guarantorId,
-        walletAddress,
-        beneficiary.id,
-        beneficiary.phoneNumber,
-      )
-    : 0;
+  if (guarantorId) {
+    await seedRemittanceHistory(guarantorId, walletAddress, beneficiary.id, beneficiary.phoneNumber);
+  }
 
-  return res.status(201).json({
-    message: "Beneficiary registered successfully",
-    beneficiary: beneficiaries.get(beneficiary.id),
-    remittanceHistory: {
-      recordsImported: seeded,
-      note:
-        seeded > 0
-          ? "Partner-reported remittance history was imported and the reputation score updated."
-          : "No partner-reported remittance history was available for this pair.",
-    },
-  });
+  return res.status(201).json(serializeBeneficiary(beneficiaries.get(beneficiary.id)!));
 });
 
 /**
- * GET /beneficiaries/:id — Get beneficiary details and reputation score.
+ * GET /beneficiaries/:id — A beneficiary, with their reputation score.
  */
 beneficiaryRouter.get("/:id", walletAuth, (req: Request, res: Response) => {
-  const { id } = req.params;
-  const beneficiary = beneficiaries.get(id);
-
+  const beneficiary = beneficiaries.get(req.params.id);
   if (!beneficiary) {
     return res.status(404).json({ error: "Beneficiary not found" });
   }
-
-  return res.json(beneficiary);
+  return res.json(serializeBeneficiary(beneficiary));
 });
 
 /**
- * GET /beneficiaries/:id/reputation — Detailed reputation breakdown.
+ * GET /beneficiaries/:id/reputation — The breakdown behind the score.
  */
 beneficiaryRouter.get("/:id/reputation", walletAuth, (req: Request, res: Response) => {
   const { id } = req.params;
-  const beneficiary = beneficiaries.get(id);
-
-  if (!beneficiary) {
+  if (!beneficiaries.has(id)) {
     return res.status(404).json({ error: "Beneficiary not found" });
   }
-
-  const breakdown = getReputationBreakdown(id);
-
-  return res.json({
-    beneficiaryId: id,
-    ...breakdown,
-  });
+  return res.json(serializeReputation(id, getReputationBreakdown(id)));
 });

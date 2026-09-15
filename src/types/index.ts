@@ -20,6 +20,8 @@ export interface Beneficiary {
   phoneNumber: string;
   localKycRef: string;
   reputationScore: number;    // composite score (0 to 100)
+  displayName?: string;
+  localCurrency: string;      // ISO 4217, the currency loans to them are made in
   createdAt: string;
 }
 

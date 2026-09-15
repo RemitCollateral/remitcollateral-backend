@@ -2,11 +2,18 @@ import { Router, Request, Response } from "express";
 import { walletAuth } from "../middleware/auth.middleware";
 import { loans } from "../stores";
 import * as loanService from "../services/loan.service";
+import { serializeLoan, serializeSchedule } from "../api/serializers";
+import { loanView, loanViewsFor } from "../api/loan-views";
 
 export const loanRouter = Router();
 
+const positive = (value: unknown): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value > 0;
+
 /**
  * POST /loans — Originate a loan.
+ *   { beneficiary_id, principal_local, local_currency, installment_count,
+ *     installment_interval_days, purpose? }
  */
 loanRouter.post("/", walletAuth, async (req: Request, res: Response) => {
   const guarantorId = (req as any).guarantorId as string;
@@ -14,11 +21,19 @@ loanRouter.post("/", walletAuth, async (req: Request, res: Response) => {
     return res.status(404).json({ error: "Guarantor not found. Register first." });
   }
 
-  const { beneficiaryId, principalLocal, localCurrency, installmentCount, installmentIntervalDays, purpose } = req.body;
+  const body = req.body ?? {};
+  const beneficiaryId = typeof body.beneficiary_id === "string" ? body.beneficiary_id : "";
+  const localCurrency = typeof body.local_currency === "string" ? body.local_currency.toUpperCase() : "";
+  const { principal_local: principalLocal, installment_count: installmentCount } = body;
+  const installmentIntervalDays = positive(body.installment_interval_days)
+    ? body.installment_interval_days
+    : undefined;
+  const purpose = typeof body.purpose === "string" && body.purpose.trim() ? body.purpose.trim() : undefined;
 
-  if (!beneficiaryId || !principalLocal || !localCurrency || !installmentCount) {
+  if (!beneficiaryId || !localCurrency || !positive(principalLocal) || !Number.isInteger(installmentCount) || installmentCount < 1) {
     return res.status(400).json({
-      error: "Missing required fields: beneficiaryId, principalLocal, localCurrency, installmentCount",
+      error:
+        "beneficiary_id, local_currency, a positive principal_local and a whole installment_count of at least 1 are required",
     });
   }
 
@@ -31,18 +46,14 @@ loanRouter.post("/", walletAuth, async (req: Request, res: Response) => {
       installmentIntervalDays,
       purpose,
     });
-
-    return res.status(201).json({
-      message: "Loan originated successfully",
-      loan,
-    });
+    return res.status(201).json(serializeLoan(loan));
   } catch (err) {
     return res.status(400).json({ error: (err as Error).message });
   }
 });
 
 /**
- * GET /loans — List loans for the authenticated guarantor.
+ * GET /loans — Every loan the guarantor's collateral backs, most urgent first.
  */
 loanRouter.get("/", walletAuth, (req: Request, res: Response) => {
   const guarantorId = (req as any).guarantorId as string;
@@ -51,60 +62,30 @@ loanRouter.get("/", walletAuth, (req: Request, res: Response) => {
   }
 
   const { status } = req.query;
-  let myLoans = Array.from(loans.values()).filter(
-    (l) => l.guarantorId === guarantorId,
-  );
-
-  if (status) {
-    myLoans = myLoans.filter((l) => l.status === status);
-  }
-
-  return res.json({ total: myLoans.length, loans: myLoans });
+  const views = loanViewsFor(guarantorId);
+  return res.json(status ? views.filter((view) => view.status === status) : views);
 });
 
 /**
- * GET /loans/:id — Loan details with repayment status.
+ * GET /loans/:id — A loan with its beneficiary and repayment figures.
  */
 loanRouter.get("/:id", walletAuth, (req: Request, res: Response) => {
-  const { id } = req.params;
-  const loan = loans.get(id);
-
+  const loan = loans.get(req.params.id);
   if (!loan || loan.guarantorId !== (req as any).guarantorId) {
     // Not distinguished from "not found": telling a caller that a loan
     // exists but belongs to someone else leaks that it exists at all.
     return res.status(404).json({ error: "Loan not found" });
   }
-
-  const repaidCount = loan.schedule.filter((s) => s.status === "repaid").length;
-  const totalRepaidUsd = loan.schedule
-    .filter((s) => s.status === "repaid")
-    .reduce((sum, s) => sum + s.amountUsd, 0);
-
-  return res.json({
-    ...loan,
-    repaymentProgress: {
-      installmentsRepaid: repaidCount,
-      installmentsTotal: loan.installmentCount,
-      totalRepaidUsd,
-      percentComplete: Math.round((repaidCount / loan.installmentCount) * 100),
-    },
-  });
+  return res.json(loanView(loan));
 });
 
 /**
- * GET /loans/:id/schedule — Full installment schedule with payment status.
+ * GET /loans/:id/schedule — The installment schedule with payment status.
  */
 loanRouter.get("/:id/schedule", walletAuth, (req: Request, res: Response) => {
-  const { id } = req.params;
-  const loan = loans.get(id);
-
+  const loan = loans.get(req.params.id);
   if (!loan || loan.guarantorId !== (req as any).guarantorId) {
     return res.status(404).json({ error: "Loan not found" });
   }
-
-  return res.json({
-    loanId: loan.id,
-    localCurrency: loan.localCurrency,
-    schedule: loan.schedule,
-  });
+  return res.json(serializeSchedule(loan.schedule));
 });

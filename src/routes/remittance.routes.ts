@@ -10,6 +10,7 @@ import {
 } from "../stores";
 import { logAuditEvent } from "../services/audit.service";
 import { refreshReputationScore } from "../services/reputation.service";
+import { serializeRemittance } from "../api/serializers";
 
 export const remittanceRouter = Router();
 
@@ -22,11 +23,15 @@ remittanceRouter.post("/", walletAuth, (req: Request, res: Response) => {
     return res.status(404).json({ error: "Guarantor not found. Register first." });
   }
 
-  const { beneficiaryId, amountUsd, localAmount, localCurrency, sentAt } = req.body;
+  const beneficiaryId = req.body?.beneficiary_id;
+  const amountUsd = req.body?.amount_usd;
+  const localAmount = req.body?.local_amount;
+  const localCurrency = req.body?.local_currency;
+  const sentAt = req.body?.sent_at;
 
   if (!beneficiaryId || !amountUsd || !localAmount || !localCurrency || !sentAt) {
     return res.status(400).json({
-      error: "Missing required fields: beneficiaryId, amountUsd, localAmount, localCurrency, sentAt",
+      error: "Missing required fields: beneficiary_id, amount_usd, local_amount, local_currency, sent_at",
     });
   }
 
@@ -68,12 +73,7 @@ remittanceRouter.post("/", walletAuth, (req: Request, res: Response) => {
     details: { amountUsd, localAmount, localCurrency, source },
   });
 
-  return res.status(201).json({
-    message:
-      "Remittance recorded as self-declared. Self-declared records are weighted " +
-      "at 0.0 in v1 scoring (§8.2) and do not affect the reputation score.",
-    remittance: record,
-  });
+  return res.status(201).json(serializeRemittance(record));
 });
 
 /**
@@ -85,7 +85,7 @@ remittanceRouter.get("/", walletAuth, (req: Request, res: Response) => {
     return res.status(404).json({ error: "Guarantor not found. Register first." });
   }
 
-  const { beneficiaryId } = req.query;
+  const beneficiaryId = req.query.beneficiary_id;
   let records = remittanceRecords.filter((r) => r.guarantorId === guarantorId);
 
   if (beneficiaryId) {
@@ -96,7 +96,7 @@ remittanceRouter.get("/", walletAuth, (req: Request, res: Response) => {
     (a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime(),
   );
 
-  return res.json({ total: records.length, remittances: records });
+  return res.json(records.map(serializeRemittance));
 });
 
 /**

@@ -117,6 +117,8 @@ npm start
 
 All endpoints are prefixed with `/api/v1` (except `/health`).
 
+Request and response bodies use snake_case, in the shapes the frontend declares in its `lib/types.ts`: resources are returned directly and lists as JSON arrays, not wrapped in an envelope. Error responses carry the reason as both `error` and `message`.
+
 ### Health & Platform
 
 | Method | Endpoint | Auth | Description |
@@ -144,7 +146,7 @@ Each challenge works once and expires after five minutes. Endpoints marked **Adm
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `POST` | `/api/v1/guarantors` | Wallet | Register as a guarantor |
-| `GET` | `/api/v1/guarantors/me` | Wallet | Get own profile and vault summary |
+| `GET` | `/api/v1/guarantors/me` | Wallet | The signed-in guarantor's profile |
 | `GET` | `/api/v1/guarantors/me/dashboard` | Wallet | Full dashboard data (loans, collateral, risk) |
 
 ### Vaults
@@ -152,7 +154,7 @@ Each challenge works once and expires after five minutes. Endpoints marked **Adm
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `POST` | `/api/v1/vaults/deposit` | Wallet | Record a USDC deposit into guarantor's vault |
-| `POST` | `/api/v1/vaults/withdraw` | Wallet | Withdraw unlocked collateral |
+| `POST` | `/api/v1/vaults/withdraw` | Wallet | Withdraw unlocked collateral to the signed-in wallet |
 | `GET` | `/api/v1/vaults/me` | Wallet | Vault balance breakdown (total, locked, available) |
 
 ### Beneficiaries
@@ -263,6 +265,7 @@ remitcollateral-backend/
 │   ├── adapters/           # Off-ramp adapter interface & MockOffRampAdapter
 │   ├── contracts/          # ContractGateway interface & MockContractGateway
 │   ├── auth/               # Wallet signature checks, challenges & sessions
+│   ├── api/                # Response serializers (the API's wire format) & loan views
 │   ├── testing/            # Test helpers (the API on a local port)
 │   ├── stores/             # Centralized in-memory data stores
 │   ├── services/           # Loan, vault, liquidation, reputation, remittance,
