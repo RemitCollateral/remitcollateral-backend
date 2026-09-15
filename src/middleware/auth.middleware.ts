@@ -1,30 +1,31 @@
 import { Request, Response, NextFunction } from "express";
-import crypto from "crypto";
 import { config } from "../config";
-import { authChallenges, walletToGuarantor } from "../stores";
-import { AuthChallenge } from "../types";
+import { walletToGuarantor } from "../stores";
+import { Session } from "../types";
+import { bearerToken, resolveSession } from "../auth/sessions";
+
+function sessionOf(req: Request): Session | null {
+  const token = bearerToken(req.headers.authorization);
+  return token ? resolveSession(token) : null;
+}
 
 /**
- * Wallet authentication middleware (v1 simplified).
+ * Wallet authentication. Requires the session token issued by
+ * POST /auth/verify, sent as `Authorization: Bearer <token>`.
  *
- * In v1, we use a header-based approach where the wallet address is passed
- * via `x-wallet-address`. In production, this would be replaced with
- * Stellar challenge-response signing (SEP-10).
- *
- * Sets `req.walletAddress` and `req.guarantorId` on the request.
+ * The wallet address comes from the session, which a signature has proven,
+ * never from the request itself. Sets `req.walletAddress`, and
+ * `req.guarantorId` once the wallet is registered.
  */
 export function walletAuth(req: Request, res: Response, next: NextFunction): void {
-  const walletAddress = req.headers["x-wallet-address"] as string;
-
-  if (!walletAddress) {
-    res.status(401).json({ error: "Missing x-wallet-address header" });
+  const session = sessionOf(req);
+  if (!session) {
+    res.status(401).json({ error: "Sign in with your wallet first" });
     return;
   }
 
-  // Attach to request
-  (req as any).walletAddress = walletAddress;
-
-  const guarantorId = walletToGuarantor.get(walletAddress);
+  (req as any).walletAddress = session.walletAddress;
+  const guarantorId = walletToGuarantor.get(session.walletAddress);
   if (guarantorId) {
     (req as any).guarantorId = guarantorId;
   }
@@ -58,51 +59,22 @@ export function partnerAuth(req: Request, res: Response, next: NextFunction): vo
 }
 
 /**
- * Admin authentication middleware.
- * Validates the wallet address is the configured admin.
+ * Admin authentication. Requires a signed-in session whose wallet is the
+ * configured admin wallet. Fails closed: with no admin wallet configured,
+ * nobody is an admin.
  */
 export function adminAuth(req: Request, res: Response, next: NextFunction): void {
-  const walletAddress = req.headers["x-wallet-address"] as string;
-
-  if (!walletAddress) {
-    res.status(401).json({ error: "Missing x-wallet-address header" });
+  const session = sessionOf(req);
+  if (!session) {
+    res.status(401).json({ error: "Sign in with your wallet first" });
     return;
   }
 
-  if (config.adminWalletAddress && walletAddress !== config.adminWalletAddress) {
+  if (!config.adminWalletAddress || session.walletAddress !== config.adminWalletAddress) {
     res.status(403).json({ error: "Admin access required" });
     return;
   }
 
-  (req as any).walletAddress = walletAddress;
+  (req as any).walletAddress = session.walletAddress;
   next();
-}
-
-// ─── Challenge Helpers (used by auth routes) ─────────────────────────
-
-export function generateChallenge(walletAddress: string): AuthChallenge {
-  const challenge: AuthChallenge = {
-    walletAddress,
-    challenge: crypto.randomBytes(32).toString("hex"),
-    expiresAt: new Date(
-      Date.now() + config.challengeExpirySeconds * 1000,
-    ).toISOString(),
-  };
-
-  authChallenges.set(walletAddress, challenge);
-  return challenge;
-}
-
-export function verifyChallenge(walletAddress: string, _signedChallenge: string): boolean {
-  const challenge = authChallenges.get(walletAddress);
-  if (!challenge) return false;
-
-  if (new Date(challenge.expiresAt) < new Date()) {
-    authChallenges.delete(walletAddress);
-    return false;
-  }
-
-  // v1 stub: accept any non-empty signed challenge
-  authChallenges.delete(walletAddress);
-  return true;
 }

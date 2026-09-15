@@ -23,7 +23,7 @@ The backend API serves as the orchestration layer between the frontend, Soroban 
 | Runtime | Node.js |
 | Language | TypeScript 5.4 |
 | Framework | Express 4.x |
-| Blockchain | Stellar SDK 13.x / Soroban |
+| Blockchain | Stellar SDK 17.x / Soroban |
 | Off-Ramp | `OffRampAdapter` interface (`MockOffRampAdapter` for dev/testing) |
 | Contracts | `ContractGateway` interface (`MockContractGateway` for dev/testing) |
 | Database | In-memory data stores (v1 prototype) |
@@ -122,8 +122,17 @@ All endpoints are prefixed with `/api/v1` (except `/health`).
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/v1/auth/challenge` | None | Request signing challenge for wallet address |
-| `POST` | `/api/v1/auth/verify` | None | Submit signed challenge, receive session token |
+| `GET` | `/api/v1/auth/challenge?wallet_address=G…` | None | A one-time message for the wallet to sign |
+| `POST` | `/api/v1/auth/verify` | None | Exchange the signed message for a session token |
+
+Signing in:
+
+1. `GET /api/v1/auth/challenge?wallet_address=<G…>` returns `{ wallet_address, challenge, expires_at }`. The `challenge` is a message naming this service, the wallet, a one-time nonce and an expiry.
+2. The wallet signs `challenge`: Freighter's `signMessage` (SEP-53), or `signBlob` on older versions.
+3. `POST /api/v1/auth/verify` with `{ wallet_address, signature }` (base64 or hex) returns `{ token, guarantor, expires_at }`. A wallet's first sign-in registers it as a guarantor.
+4. Send `Authorization: Bearer <token>` on every request marked **Wallet** below. Sessions last 12 hours by default (`SESSION_TTL_SECONDS`).
+
+Each challenge works once and expires after five minutes. Endpoints marked **Admin** also require the session's wallet to be `ADMIN_WALLET_ADDRESS`; if that is unset, they refuse everyone.
 
 ### Guarantors
 
@@ -231,10 +240,11 @@ and are worth stating because they constrain what callers can do:
 - **Attestations are attributed to the authenticated partner.** The partner
   identifier on a repayment comes from the API key that authenticated the
   request, never from the request body.
-
-Wallet authentication is still the v1 header stub (`x-wallet-address`), not
-SEP-10 signing. Loan reads are scoped to the owning guarantor regardless, so
-ownership is enforced correctly once real signing replaces the header.
+- **Wallet identity is proven by a signature.** Protected endpoints take the
+  wallet from a session that a signed challenge established, never from the
+  request, so one guarantor cannot act as another. The `x-wallet-address`
+  header is no longer accepted. Sessions, like all v1 data, live in memory and
+  end when the server restarts.
 
 ---
 
@@ -247,6 +257,8 @@ remitcollateral-backend/
 │   ├── types/              # Domain entities, DTOs & adapter types
 │   ├── adapters/           # Off-ramp adapter interface & MockOffRampAdapter
 │   ├── contracts/          # ContractGateway interface & MockContractGateway
+│   ├── auth/               # Wallet signature checks, challenges & sessions
+│   ├── testing/            # Test helpers (the API on a local port)
 │   ├── stores/             # Centralized in-memory data stores
 │   ├── services/           # Loan, vault, liquidation, reputation, remittance,
 │   │                       #   notification & audit logic

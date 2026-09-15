@@ -8,6 +8,7 @@ import {
   RepaymentAttestation,
   AuditEvent,
   AuthChallenge,
+  Session,
 } from "../types";
 
 // ─── In-Memory Stores ────────────────────────────────────────────────
@@ -19,7 +20,10 @@ export const loans: Map<string, Loan> = new Map();
 export const remittanceRecords: RemittanceRecord[] = [];
 export const repaymentAttestations: RepaymentAttestation[] = [];
 export const auditEvents: AuditEvent[] = [];
-export const authChallenges: Map<string, AuthChallenge> = new Map();
+/** Outstanding sign-in challenges, per wallet address. */
+export const authChallenges: Map<string, AuthChallenge[]> = new Map();
+/** Live sessions, keyed by the SHA-256 hash of their token. */
+export const sessions: Map<string, Session> = new Map();
 
 // ─── Lookup Indexes ──────────────────────────────────────────────────
 

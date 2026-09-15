@@ -83,6 +83,7 @@ export interface RepaymentAttestation {
 }
 
 export type AuditEventType =
+  | "AUTH"
   | "GUARANTOR"
   | "VAULT"
   | "BENEFICIARY"
@@ -193,7 +194,14 @@ export interface OffRampAttestation {
 
 export interface AuthChallenge {
   walletAddress: string;
+  /** The exact message the wallet must sign. */
   challenge: string;
+  expiresAt: string;
+}
+
+/** A signed-in wallet. Stored under a hash of its token, never the token itself. */
+export interface Session {
+  walletAddress: string;
   expiresAt: string;
 }
 

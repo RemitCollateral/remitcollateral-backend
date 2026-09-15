@@ -6,9 +6,8 @@ import {
   walletToGuarantor,
   loans,
   beneficiaries,
-  generateId,
 } from "../stores";
-import { logAuditEvent } from "../services/audit.service";
+import { createGuarantor } from "../services/guarantor.service";
 import * as vaultService from "../services/vault.service";
 import { outstandingCollateral } from "../services/loan.service";
 
@@ -30,27 +29,7 @@ guarantorRouter.post("/", walletAuth, (req: Request, res: Response) => {
     });
   }
 
-  const guarantor: Guarantor = {
-    id: generateId(),
-    walletAddress,
-    displayName,
-    createdAt: new Date().toISOString(),
-  };
-
-  guarantors.set(guarantor.id, guarantor);
-  walletToGuarantor.set(walletAddress, guarantor.id);
-
-  // Auto-create vault
-  vaultService.getOrCreateVault(guarantor.id);
-
-  logAuditEvent({
-    eventType: "GUARANTOR",
-    action: "GUARANTOR_REGISTERED",
-    actor: walletAddress,
-    entityType: "guarantor",
-    entityId: guarantor.id,
-    details: { displayName },
-  });
+  const guarantor = createGuarantor(walletAddress, displayName);
 
   return res.status(201).json({
     message: "Guarantor registered successfully",

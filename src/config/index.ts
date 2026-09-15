@@ -61,6 +61,9 @@ export const config = {
 
   // Auth
   challengeExpirySeconds: 300,   // 5 minutes
+  sessionTtlSeconds: num("SESSION_TTL_SECONDS", 12 * 60 * 60), // 12 hours
+  /** Named in the sign-in message, so users can see which service they are signing in to. */
+  authDomain: process.env.AUTH_DOMAIN || "RemitCollateral",
 
   // Admin secret
   adminSecretKey: process.env.ADMIN_SECRET_KEY || "",
