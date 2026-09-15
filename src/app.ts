@@ -18,6 +18,7 @@ import { repaymentRouter } from "./routes/repayment.routes";
 import { remittanceRouter } from "./routes/remittance.routes";
 import { auditRouter } from "./routes/audit.routes";
 import { adminRouter } from "./routes/admin.routes";
+import { fxRouter } from "./routes/fx.routes";
 
 // ─── Initialize ──────────────────────────────────────────────────────
 
@@ -83,6 +84,7 @@ app.use("/api/v1/repayments", repaymentRouter);
 app.use("/api/v1/remittances", remittanceRouter);
 app.use("/api/v1/audit", auditRouter);
 app.use("/api/v1/admin", adminRouter);
+app.use("/api/v1/fx", fxRouter);
 
 // Repayment history is also accessible under /api/v1/loans/:id/repayments
 app.use("/api/v1", repaymentRouter);

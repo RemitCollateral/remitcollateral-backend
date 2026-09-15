@@ -70,6 +70,7 @@ export interface Loan {
   principalUsd: number;
   localCurrency: string;
   ltvRatio: number;            // e.g. 1.50 (150%) or 1.10 (110%)
+  fxRate: number;              // local currency units per 1 USD: the partner's rate at origination
   collateralLockedUsd: number;    // collateral locked at origination (principalUsd * ltvRatio)
   collateralReleasedUsd: number;  // cumulative collateral released back to the guarantor
   collateralForfeitedUsd: number; // cumulative collateral forfeited to settlement on default
@@ -201,6 +202,14 @@ export interface OffRampAttestation {
   beneficiary_phone: string;
   attested_at: string;
   partner_signature: string;
+}
+
+/** A partner's rate for paying out in a local currency. */
+export interface ExchangeRate {
+  local_currency: string;
+  /** Local currency units per 1 USD. */
+  local_per_usd: number;
+  quoted_at: string;
 }
 
 // ─── Auth Types ─────────────────────────────────────────────────────

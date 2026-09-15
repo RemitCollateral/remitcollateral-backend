@@ -4,6 +4,7 @@ import {
   InstallmentScheduleItem,
   OriginateLoanDTO,
   OffRampAttestation,
+  ExchangeRate,
 } from "../types";
 import {
   loans,
@@ -31,6 +32,21 @@ export function setOffRampAdapter(adapter: OffRampAdapter): void {
 
 export function setContractGateway(gateway: ContractGateway): void {
   contractGateway = gateway;
+}
+
+// ─── Exchange Rates ──────────────────────────────────────────────────
+
+/**
+ * The off-ramp partner's current rate for a currency. Loans are priced at the
+ * rate the partner will actually disburse at, not an outside reference rate.
+ */
+export async function quoteExchangeRate(localCurrency: string): Promise<ExchangeRate> {
+  if (!offRampAdapter) throw new Error("No off-ramp partner is configured to price loans");
+  const quote = await offRampAdapter.getExchangeRate(localCurrency);
+  if (!Number.isFinite(quote.local_per_usd) || quote.local_per_usd <= 0) {
+    throw new Error(`The off-ramp partner quoted an invalid rate for ${localCurrency}`);
+  }
+  return quote;
 }
 
 // ─── Loan Origination (§3.2) ─────────────────────────────────────────
@@ -62,12 +78,16 @@ export async function originateLoan(
   // Compute LTV from reputation (§8.3)
   const ltvRatio = computeAdjustedLtv(dto.beneficiaryId);
 
-  // Convert principal to USD equivalent (simplified: 1:1 for USDC-denominated)
-  // In production, this would use an FX rate oracle
-  const principalUsd = dto.principalLocal; // Simplified for v1
+  // Price the loan at the partner's rate: the USD value the partner will
+  // actually pay out is what the collateral has to cover. The rate is kept on
+  // the loan, so every installment and every release is measured against it
+  // for the loan's whole life, however the market moves afterwards.
+  const { local_per_usd: fxRate } = await quoteExchangeRate(dto.localCurrency);
+  const principalUsd = Math.round((dto.principalLocal / fxRate) * 100) / 100;
+  if (principalUsd <= 0) throw new Error("The principal is too small to price in USD");
 
   // Required collateral = principal * LTV ratio
-  const requiredCollateral = principalUsd * ltvRatio;
+  const requiredCollateral = Math.round(principalUsd * ltvRatio * 100) / 100;
   const available = vault.collateralBalance - vault.lockedAmount;
 
   if (available < requiredCollateral) {
@@ -96,6 +116,7 @@ export async function originateLoan(
     principalUsd,
     localCurrency: dto.localCurrency,
     ltvRatio,
+    fxRate,
     collateralLockedUsd: requiredCollateral,
     collateralReleasedUsd: 0,
     collateralForfeitedUsd: 0,
@@ -167,6 +188,8 @@ export async function originateLoan(
       beneficiaryId: dto.beneficiaryId,
       principalLocal: dto.principalLocal,
       localCurrency: dto.localCurrency,
+      fxRate,
+      principalUsd,
       ltvRatio,
       collateralLocked: requiredCollateral,
     },

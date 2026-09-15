@@ -1,6 +1,7 @@
 import {
   DisbursementRequest,
   DisbursementResult,
+  ExchangeRate,
   OffRampAttestation,
   OffRampRemittanceRecord,
 } from "../types";
@@ -21,6 +22,13 @@ export interface OffRampAdapter {
 
   /** Check the status of a previously submitted disbursement. */
   getDisbursementStatus(partnerReference: string): Promise<DisbursementResult>;
+
+  /**
+   * The partner's current rate for paying out in `localCurrency`, as local
+   * units per 1 USD. Loans are priced at this rate, because it is the rate the
+   * partner disburses at. Rejects a currency the partner cannot pay out in.
+   */
+  getExchangeRate(localCurrency: string): Promise<ExchangeRate>;
 
   /** Fetch remittance history for a guarantor-beneficiary pair (if supported). */
   fetchRemittanceHistory(

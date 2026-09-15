@@ -2,9 +2,19 @@ import { OffRampAdapter } from "./offramp.interface";
 import {
   DisbursementRequest,
   DisbursementResult,
+  ExchangeRate,
   OffRampAttestation,
   OffRampRemittanceRecord,
 } from "../types";
+
+/** Indicative rates, local units per 1 USD. The same figures the frontend's mock uses. */
+export const INDICATIVE_RATES: Record<string, number> = {
+  NGN: 1580,
+  GHS: 15.4,
+  XOF: 608,
+  KES: 129,
+  USD: 1,
+};
 
 /**
  * Mock Off-Ramp Adapter (§6.2)
@@ -14,6 +24,7 @@ import {
  * - verifyAttestation() accepts any non-empty signature
  * - getDisbursementStatus() returns success for known references
  * - fetchRemittanceHistory() returns configurable seed data
+ * - getExchangeRate() quotes fixed indicative rates for the currencies above
  */
 export class MockOffRampAdapter implements OffRampAdapter {
   private knownReferences: Map<string, DisbursementResult> = new Map();
@@ -62,6 +73,14 @@ export class MockOffRampAdapter implements OffRampAdapter {
       partner_reference: partnerReference,
       disbursed_at: new Date().toISOString(),
     };
+  }
+
+  async getExchangeRate(localCurrency: string): Promise<ExchangeRate> {
+    const rate = INDICATIVE_RATES[localCurrency];
+    if (!rate) {
+      throw new Error(`The off-ramp partner does not pay out in ${localCurrency}`);
+    }
+    return { local_currency: localCurrency, local_per_usd: rate, quoted_at: new Date().toISOString() };
   }
 
   async fetchRemittanceHistory(

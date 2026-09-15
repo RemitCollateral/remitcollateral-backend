@@ -189,10 +189,35 @@ test("beneficiaries are private to the guarantors who support them", async () =>
   assert.equal(remittance.status, 404, "no remittances to someone not on your list");
 });
 
+test("the partner's exchange rate is available to price a loan", async () => {
+  const ngn = await call("GET", "/fx/rates/ngn");
+  assert.equal(ngn.status, 200);
+  assertShape(ngn.body, ["local_currency", "local_per_usd", "quoted_at"], "exchange rate");
+  assert.equal(ngn.body.local_currency, "NGN");
+  assert.equal(ngn.body.local_per_usd, 1580);
+
+  const unsupported = await call("GET", "/fx/rates/ZZZ");
+  assert.equal(unsupported.status, 400);
+  assert.match(unsupported.body.message, /does not pay out in ZZZ/);
+  assert.equal((await fetch(`${base}/api/v1/fx/rates/NGN`)).status, 401);
+});
+
+test("a loan in a currency the partner cannot pay out in is refused", async () => {
+  const { status, body } = await call("POST", "/loans", {
+    beneficiary_id: beneficiaryId,
+    principal_local: 1000,
+    local_currency: "ZZZ",
+    installment_count: 2,
+    installment_interval_days: 30,
+  });
+  assert.equal(status, 400);
+  assert.match(body.message, /does not pay out in ZZZ/);
+});
+
 test("a new loan comes back as a Loan with a live schedule", async () => {
   const { status, body } = await call("POST", "/loans", {
     beneficiary_id: beneficiaryId,
-    principal_local: 400,
+    principal_local: 400000,
     local_currency: "NGN",
     installment_count: 4,
     installment_interval_days: 30,
@@ -204,6 +229,8 @@ test("a new loan comes back as a Loan with a live schedule", async () => {
   loan.schedule.forEach((entry: unknown, i: number) => assertShape(entry, SCHEDULE_ENTRY, `schedule[${i}]`));
   assert.deepEqual(loan.schedule.map((e: any) => e.status), ["due", "upcoming", "upcoming", "upcoming"]);
   assert.equal(loan.purpose, "Restocking the shop");
+  // 400,000 NGN at the partner's 1,580 per USD, not 400,000 USD.
+  assert.equal(loan.principal_usd, 253.16);
   loanId = loan.id;
 });
 

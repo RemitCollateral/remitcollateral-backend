@@ -97,6 +97,10 @@ unset, so an empty `.env` runs the protocol exactly as specified.
 | `REPAYMENT_WEIGHT` | `0.60` | Weight of repayment history in the score |
 | `MIN_REMITTANCE_MONTHS` | `6` | History needed before remittances influence LTV |
 
+#### Exchange rates
+
+A loan's principal is set in the beneficiary's local currency and priced in USD at the off-ramp partner's rate when it is originated, since that is the rate the partner pays out at. The rate is recorded on the loan, so its installments and collateral releases are measured against it for the loan's whole life. A currency the partner cannot pay out in is refused. The mock partner quotes fixed indicative rates for NGN, GHS, XOF, KES and USD.
+
 ### Running
 
 ```bash
@@ -167,6 +171,12 @@ Each challenge works once and expires after five minutes. Endpoints marked **Adm
 | `GET` | `/api/v1/beneficiaries/:id/reputation` | Wallet | Detailed reputation score breakdown |
 
 A beneficiary is one person, however many guarantors support them. Adding a phone number that is already registered links you to that same person and their shared credit history, but only if the partner KYC reference matches as well; a phone number alone is not enough. Each guarantor keeps their own name for them, and can see, lend to and record remittances for only the beneficiaries on their own list.
+
+### Exchange rates
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/v1/fx/rates/:currency` | Wallet | The off-ramp partner's current rate, in local units per 1 USD |
 
 ### Loans
 
