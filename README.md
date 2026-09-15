@@ -40,8 +40,8 @@ The backend API serves as the orchestration layer between the frontend, Soroban 
 ### Installation
 
 ```bash
-git clone https://github.com/NeonsLabs/stellar-homes-backend.git
-cd stellar-homes-backend
+git clone https://github.com/RemitCollateral/remitcollateral-backend.git
+cd remitcollateral-backend
 npm install
 ```
 
@@ -72,6 +72,10 @@ PARTNER_ID=mock-offramp-partner
 ADMIN_WALLET_ADDRESS=G...
 SETTLEMENT_ADDRESS=GSETTLEMENTADDRESS1234567890
 
+# Wallet sign-in
+AUTH_DOMAIN=RemitCollateral
+SESSION_TTL_SECONDS=43200
+
 # Scheduled jobs
 LIFECYCLE_SWEEP_INTERVAL_MINUTES=60
 ```
@@ -98,6 +102,9 @@ unset, so an empty `.env` runs the protocol exactly as specified.
 ```bash
 # Development (hot-reload)
 npm run dev
+
+# Tests
+npm test
 
 # Production build & start
 npm run build
