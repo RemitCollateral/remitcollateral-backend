@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { Request, Response, NextFunction } from "express";
 import { config } from "../config";
 import { walletToGuarantor } from "../stores";
@@ -33,19 +34,31 @@ export function walletAuth(req: Request, res: Response, next: NextFunction): voi
   next();
 }
 
+/** Compare two secrets in constant time, without revealing their lengths. */
+function sameSecret(a: string, b: string): boolean {
+  const digest = (value: string) => crypto.createHash("sha256").update(value).digest();
+  return crypto.timingSafeEqual(digest(a), digest(b));
+}
+
 /**
- * Partner API key authentication middleware.
- * Validates the `x-api-key` header against the configured partner key.
+ * Partner API key authentication. Checks the `x-api-key` header against the
+ * configured partner key, in constant time. Fails closed: with no key
+ * configured, partner endpoints refuse everyone rather than falling back to a
+ * known default.
  */
 export function partnerAuth(req: Request, res: Response, next: NextFunction): void {
-  const apiKey = req.headers["x-api-key"] as string;
+  if (!config.partnerApiKey) {
+    res.status(503).json({ error: "Partner access is not configured" });
+    return;
+  }
 
-  if (!apiKey) {
+  const apiKey = req.headers["x-api-key"];
+  if (typeof apiKey !== "string" || !apiKey) {
     res.status(401).json({ error: "Missing x-api-key header" });
     return;
   }
 
-  if (apiKey !== config.partnerApiKey) {
+  if (!sameSecret(apiKey, config.partnerApiKey)) {
     res.status(403).json({ error: "Invalid API key" });
     return;
   }

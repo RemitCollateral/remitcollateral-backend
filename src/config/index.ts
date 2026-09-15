@@ -56,7 +56,8 @@ export const config = {
   },
 
   // Partner auth
-  partnerApiKey: process.env.PARTNER_API_KEY || "dev-partner-key-v1",
+  // No default: without a configured key, partner endpoints refuse everyone.
+  partnerApiKey: process.env.PARTNER_API_KEY || "",
   partnerId: process.env.PARTNER_ID || "mock-offramp-partner",
 
   // Auth

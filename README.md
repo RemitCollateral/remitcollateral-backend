@@ -64,10 +64,8 @@ LOAN_LEDGER_CONTRACT_ID=
 LIQUIDATION_ENGINE_CONTRACT_ID=
 
 # Off-Ramp Partner
-PARTNER_API_KEY=dev-partner-key-v1
-
-# Off-Ramp Partner
-PARTNER_API_KEY=dev-partner-key-v1
+# Required: partner endpoints refuse every request while it is unset.
+PARTNER_API_KEY=<generate one: openssl rand -hex 32>
 PARTNER_ID=mock-offramp-partner
 
 # Admin / Settlement
