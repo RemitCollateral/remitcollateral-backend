@@ -25,7 +25,7 @@ The backend API serves as the orchestration layer between the frontend, Soroban 
 | Framework | Express 4.x |
 | Blockchain | Stellar SDK 17.x / Soroban |
 | Off-Ramp | `OffRampAdapter` interface (`MockOffRampAdapter` for dev/testing) |
-| Contracts | `ContractGateway` interface (`MockContractGateway` for dev/testing) |
+| Contracts | Live client for the deployed contracts (`src/chain`); without a deployment configured, `MockContractGateway` stands in |
 | Database | In-memory data stores (v1 prototype) |
 
 ---
@@ -34,7 +34,7 @@ The backend API serves as the orchestration layer between the frontend, Soroban 
 
 ### Prerequisites
 
-- **Node.js** ≥ 18
+- **Node.js** ≥ 22 (the test runner uses `node --test` with glob patterns)
 - **npm** ≥ 9
 
 ### Installation
@@ -103,6 +103,8 @@ unset, so an empty `.env` runs the protocol exactly as specified.
 | `REPAYMENT_WEIGHT` | `0.60` | Weight of repayment history in the score |
 | `MIN_REMITTANCE_MONTHS` | `6` | History needed before remittances influence LTV |
 
+With the contracts connected, the LoanLedger's own settings decide what happens on chain. Its grace period is fixed when it is deployed (14 days on the testnet deployment), so set `GRACE_PERIOD_DAYS` to match it.
+
 #### Exchange rates
 
 A loan's principal is set in the beneficiary's local currency and priced in USD at the off-ramp partner's rate when it is originated, since that is the rate the partner pays out at. The rate is recorded on the loan, so its installments and collateral releases are measured against it for the loan's whole life. A currency the partner cannot pay out in is refused. The mock partner quotes fixed indicative rates for NGN, GHS, XOF, KES and USD.
@@ -127,9 +129,13 @@ A beneficiary's handle is an HMAC rather than a plain hash because everything on
 2. The wallet signs `xdr`, for example with Freighter's `signTransaction`.
 3. `POST /api/v1/vaults/deposit/submit` (or `withdraw/submit`) with `{ hash, signed_xdr }` returns the updated vault.
 
-A prepared transaction is valid for five minutes, only for the guarantor it was prepared for, and only if the signed envelope is exactly what was prepared. Without the contracts configured, `POST /vaults/deposit` and `/withdraw` record collateral in the backend's own accounting, as before. Loans follow the same pattern: `POST /api/v1/loans/prepare` prices the loan at the partner's rate and returns the origination to sign, and `POST /api/v1/loans/submit` sends it, records the loan against its on-chain ID, and has the partner disburse it. Before preparing, the backend publishes the beneficiary's reputation if the chain's copy is out of date, so the collateral the ledger locks is the collateral the backend quoted. Repayments and liquidation are being moved onto the chain next.
+A prepared transaction is valid for five minutes, only for the guarantor it was prepared for, and only if the signed envelope is exactly what was prepared. Without the contracts configured, `POST /vaults/deposit` and `/withdraw` record collateral in the backend's own accounting, as before. Loans follow the same pattern: `POST /api/v1/loans/prepare` prices the loan at the partner's rate and returns the origination to sign, and `POST /api/v1/loans/submit` sends it, records the loan against its on-chain ID, and has the partner disburse it. Before preparing, the backend publishes the beneficiary's reputation if the chain's copy is out of date, so the collateral the ledger locks is the collateral the backend quoted.
 
-The contracts cannot yet cancel a loan whose disbursement fails after its collateral is locked. Such a failure is recorded and audited as `LOAN_DISBURSEMENT_FAILED` for an operator to resolve. `npm run test:chain` exercises the client against a real deployment — set the three contract IDs, `VERIFIER_SECRET_KEY`, `ORACLE_SECRET_KEY`, and `CHAIN_TEST_GUARANTOR_SECRET` and `CHAIN_TEST_PARTNER_SECRET` for funded testnet accounts.
+> **Not yet on chain: repayments and liquidation.** With the contracts connected, `POST /repayments/attest` still updates only the backend's own records, so no collateral is released on chain, and the lifecycle sweep moves overdue loans into grace and default locally rather than through the LiquidationEngine's cranks. The chain client already implements both — co-signed attestations and the cranks — but the services do not use them yet. Do not run with the contracts connected for real users until they do.
+
+The contracts cannot cancel a loan whose disbursement fails after its collateral is locked. Such a failure is recorded and audited as `LOAN_DISBURSEMENT_FAILED` for an operator to resolve.
+
+`npm run test:chain` exercises the chain client against a real deployment. Set the three contract IDs, `VERIFIER_SECRET_KEY`, `ORACLE_SECRET_KEY`, and `CHAIN_TEST_GUARANTOR_SECRET` and `CHAIN_TEST_PARTNER_SECRET` for funded testnet accounts.
 
 ### Running
 
@@ -139,6 +145,9 @@ npm run dev
 
 # Tests
 npm test
+
+# Chain client against a live testnet deployment (see On-chain roles)
+npm run test:chain
 
 # Production build & start
 npm run build
@@ -158,6 +167,7 @@ Request and response bodies use snake_case, in the shapes the frontend declares 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `GET` | `/health` | None | Service health, uptime, version |
+| `GET` | `/api/v1/chain` | None | Whether the contracts are connected: `{ enabled, network_passphrase }` |
 
 ### Authentication
 
@@ -187,9 +197,11 @@ Each challenge works once and expires after five minutes. Endpoints marked **Adm
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/v1/vaults/deposit` | Wallet | Record a USDC deposit into guarantor's vault |
-| `POST` | `/api/v1/vaults/withdraw` | Wallet | Withdraw unlocked collateral to the signed-in wallet |
-| `GET` | `/api/v1/vaults/me` | Wallet | Vault balance breakdown (total, locked, available) |
+| `POST` | `/api/v1/vaults/deposit` | Wallet | Record a USDC deposit (without the contracts connected) |
+| `POST` | `/api/v1/vaults/withdraw` | Wallet | Withdraw unlocked collateral to the signed-in wallet (without the contracts connected) |
+| `POST` | `/api/v1/vaults/deposit/prepare` · `/submit` | Wallet | A deposit signed by the guarantor's wallet (contracts connected) |
+| `POST` | `/api/v1/vaults/withdraw/prepare` · `/submit` | Wallet | A withdrawal signed by the guarantor's wallet (contracts connected) |
+| `GET` | `/api/v1/vaults/me` | Wallet | Vault balance breakdown (total, locked, available), read from chain when connected |
 
 ### Beneficiaries
 
@@ -212,7 +224,8 @@ A beneficiary is one person, however many guarantors support them. Adding a phon
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/v1/loans` | Wallet | Originate loan (checks vault, computes LTV, disburses) |
+| `POST` | `/api/v1/loans` | Wallet | Originate a loan (without the contracts connected) |
+| `POST` | `/api/v1/loans/prepare` · `/submit` | Wallet | Originate a loan signed by the guarantor's wallet (contracts connected) |
 | `GET` | `/api/v1/loans` | Wallet | List loans for authenticated guarantor |
 | `GET` | `/api/v1/loans/:id` | Wallet | Loan details with repayment status |
 | `GET` | `/api/v1/loans/:id/schedule` | Wallet | Full installment schedule |
@@ -271,6 +284,10 @@ records as the architecture requires.
 `POST /api/v1/admin/liquidation/review` runs the same sweep immediately. It
 takes no action on loans that need none, so it is safe to run at any time.
 
+With the contracts connected, the sweep still works on the backend's own
+records; it does not yet drive the LiquidationEngine's cranks (see
+[On-chain roles](#on-chain-roles)).
+
 > **Single-instance assumption.** The sweep runs in-process. Running more
 > than one instance would run it more than once per tick, so a multi-instance
 > deployment needs an external scheduler or a lock.
@@ -279,7 +296,7 @@ takes no action on loans that need none, so it is safe to run at any time.
 
 ## Trust Boundaries
 
-Two rules in the architecture are enforced in code rather than by convention,
+These rules are enforced in code rather than by convention,
 and are worth stating because they constrain what callers can do:
 
 - **Remittance source is assigned, not accepted.** Anything recorded through
@@ -295,6 +312,10 @@ and are worth stating because they constrain what callers can do:
   request, so one guarantor cannot act as another. The `x-wallet-address`
   header is no longer accepted. Sessions, like all v1 data, live in memory and
   end when the server restarts.
+- **Collateral moves only with the guarantor's signature.** With the contracts
+  connected, the backend prepares deposits, withdrawals and loans, and submits
+  only the exact transaction it prepared once the guarantor's wallet has signed
+  it. It holds no key that can move a guarantor's collateral.
 
 ---
 
