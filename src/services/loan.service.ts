@@ -5,7 +5,9 @@ import {
   OriginateLoanDTO,
   OffRampAttestation,
   ExchangeRate,
+  ChainLoanDraft,
 } from "../types";
+import type { ChainLoan } from "../chain/soroban";
 import {
   loans,
   beneficiaries,
@@ -198,6 +200,134 @@ export async function originateLoan(
   return loan;
 }
 
+// ─── Origination on chain ────────────────────────────────────────────
+
+/**
+ * Price a loan for origination on chain, before the guarantor signs. The same
+ * checks and pricing as originateLoan, without touching any collateral: on
+ * chain, the ledger locks it when the guarantor's signed transaction lands.
+ */
+export async function draftChainLoan(guarantorId: string, dto: OriginateLoanDTO): Promise<ChainLoanDraft> {
+  const beneficiary = beneficiaries.get(dto.beneficiaryId);
+  if (!beneficiary) throw new Error(`Beneficiary ${dto.beneficiaryId} not found`);
+
+  const open = Array.from(loans.values()).find(
+    (l) =>
+      l.guarantorId === guarantorId &&
+      l.beneficiaryId === dto.beneficiaryId &&
+      (l.status === "active" || l.status === "grace"),
+  );
+  if (open) throw new Error("An active loan already exists for this beneficiary");
+
+  const { local_per_usd: fxRate } = await quoteExchangeRate(dto.localCurrency);
+  const principalUsd = Math.round((dto.principalLocal / fxRate) * 100) / 100;
+  if (principalUsd <= 0) throw new Error("The principal is too small to price in USD");
+
+  return {
+    beneficiaryId: dto.beneficiaryId,
+    principalLocal: dto.principalLocal,
+    localCurrency: dto.localCurrency,
+    installmentCount: dto.installmentCount,
+    intervalDays: dto.installmentIntervalDays || 30,
+    purpose: dto.purpose,
+    fxRate,
+    principalUsd,
+    ltvRatio: computeAdjustedLtv(dto.beneficiaryId),
+  };
+}
+
+/**
+ * Record a loan the guarantor has originated on chain, and have the partner
+ * disburse it. Principal, LTV and the collateral locked are taken from the
+ * chain, which is where the collateral actually sits.
+ *
+ * A failed disbursement cannot be unwound here: the collateral is already
+ * locked on chain, and the contracts have no way to cancel an undisbursed
+ * loan yet. It is recorded and audited so it can be resolved, not hidden.
+ */
+export async function recordChainLoan(
+  guarantorId: string,
+  draft: ChainLoanDraft,
+  onChain: ChainLoan,
+): Promise<Loan> {
+  const beneficiary = beneficiaries.get(draft.beneficiaryId);
+  if (!beneficiary) throw new Error(`Beneficiary ${draft.beneficiaryId} not found`);
+
+  const now = new Date().toISOString();
+  const loan: Loan = {
+    id: generateId(),
+    vaultId: vaultService.getOrCreateVault(guarantorId).id,
+    beneficiaryId: draft.beneficiaryId,
+    guarantorId,
+    principalLocal: draft.principalLocal,
+    principalUsd: onChain.principalUsd,
+    localCurrency: draft.localCurrency,
+    ltvRatio: onChain.ltvBps / 10_000,
+    fxRate: draft.fxRate,
+    collateralLockedUsd: onChain.collateralLockedUsd,
+    collateralReleasedUsd: onChain.collateralReleasedUsd,
+    collateralForfeitedUsd: 0,
+    installmentCount: draft.installmentCount,
+    installmentIntervalDays: draft.intervalDays,
+    schedule: generateInstallmentSchedule(
+      draft.principalLocal,
+      onChain.principalUsd,
+      draft.installmentCount,
+      draft.intervalDays,
+      onChain.originatedAt,
+    ),
+    status: "active",
+    purpose: draft.purpose,
+    chainLoanId: onChain.id.toString(),
+    createdAt: now,
+    updatedAt: now,
+  };
+  loans.set(loan.id, loan);
+
+  logAuditEvent({
+    eventType: "LOAN",
+    action: "LOAN_ORIGINATED",
+    actor: guarantorId,
+    entityType: "loan",
+    entityId: loan.id,
+    details: {
+      chainLoanId: loan.chainLoanId,
+      beneficiaryId: draft.beneficiaryId,
+      principalLocal: draft.principalLocal,
+      localCurrency: draft.localCurrency,
+      fxRate: draft.fxRate,
+      principalUsd: loan.principalUsd,
+      ltvRatio: loan.ltvRatio,
+      collateralLocked: loan.collateralLockedUsd,
+    },
+  });
+
+  if (offRampAdapter) {
+    try {
+      await offRampAdapter.disburse({
+        loan_id: loan.id,
+        beneficiary_phone: beneficiary.phoneNumber,
+        beneficiary_kyc_ref: beneficiary.localKycRef,
+        amount_local: draft.principalLocal,
+        local_currency: draft.localCurrency,
+        idempotency_key: loan.id,
+      });
+      notifications.notifyLoanDisbursed(loan, beneficiary);
+    } catch (err) {
+      logAuditEvent({
+        eventType: "LOAN",
+        action: "LOAN_DISBURSEMENT_FAILED",
+        actor: guarantorId,
+        entityType: "loan",
+        entityId: loan.id,
+        details: { chainLoanId: loan.chainLoanId, message: (err as Error).message },
+      });
+    }
+  }
+
+  return loan;
+}
+
 // ─── Repayment Attestation (§3.3) ────────────────────────────────────
 
 export async function processRepaymentAttestation(
@@ -328,14 +458,14 @@ function generateInstallmentSchedule(
   principalUsd: number,
   count: number,
   intervalDays: number,
+  start: Date = new Date(),
 ): InstallmentScheduleItem[] {
   const amountLocal = Math.round((principalLocal / count) * 100) / 100;
   const amountUsd = Math.round((principalUsd / count) * 100) / 100;
   const schedule: InstallmentScheduleItem[] = [];
 
-  const now = new Date();
   for (let i = 1; i <= count; i++) {
-    const dueDate = new Date(now);
+    const dueDate = new Date(start);
     dueDate.setDate(dueDate.getDate() + intervalDays * i);
 
     schedule.push({

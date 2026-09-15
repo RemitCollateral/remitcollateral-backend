@@ -13,36 +13,63 @@ import { beneficiaries } from "../stores";
 import { config } from "../config";
 
 const balances = new Map<string, number>();
-const prepared = new Map<string, { wallet: string; delta: number; xdr: string }>();
+const locked = new Map<string, number>();
+const reputations = new Map<string, number>(); // handle → score in basis points
+const chainLoans = new Map<bigint, any>();
+const published: Array<{ handle: string; scoreBps: number }> = [];
+const prepared = new Map<string, { xdr: string; apply: () => unknown }>();
 let counter = 0;
 
-function prepare(wallet: string, delta: number) {
+function prepare(apply: () => unknown) {
   counter += 1;
   const tx = { xdr: `xdr-${counter}`, hash: `hash-${counter}` };
-  prepared.set(tx.hash, { wallet, delta, xdr: tx.xdr });
+  prepared.set(tx.hash, { xdr: tx.xdr, apply });
   return tx;
 }
+const ltvBpsFor = (handle: string) => 15_000 - Math.floor((4_000 * (reputations.get(handle) ?? 0)) / 10_000);
+const deposit = (wallet: string, delta: number) => () => balances.set(wallet, (balances.get(wallet) ?? 0) + delta);
 
 const fakeChain = {
   vaultPosition: async (wallet: string) => {
     const balanceUsd = balances.get(wallet) ?? 0;
-    return { balanceUsd, lockedUsd: 0, availableUsd: balanceUsd };
+    const lockedUsd = locked.get(wallet) ?? 0;
+    return { balanceUsd, lockedUsd, availableUsd: balanceUsd - lockedUsd };
   },
-  prepareDeposit: async (wallet: string, usd: number) => prepare(wallet, usd),
+  prepareDeposit: async (wallet: string, usd: number) => prepare(deposit(wallet, usd)),
   prepareWithdraw: async (wallet: string, usd: number) => {
-    if (usd > (balances.get(wallet) ?? 0)) {
+    if (usd > (balances.get(wallet) ?? 0) - (locked.get(wallet) ?? 0)) {
       throw new ChainError("Not enough unlocked collateral in the vault", "vault", 5, "InsufficientAvailable");
     }
-    return prepare(wallet, -usd);
+    return prepare(deposit(wallet, -usd));
   },
+  requiredLtvBps: async (handle: string) => ltvBpsFor(handle),
+  publishReputation: async (handle: string, scoreBps: number) => {
+    reputations.set(handle, scoreBps);
+    published.push({ handle, scoreBps });
+    return "published";
+  },
+  prepareOriginate: async (input: any) =>
+    prepare(() => {
+      const ltvBps = ltvBpsFor(input.beneficiaryHandle);
+      const collateral = Math.round(input.principalUsd * ltvBps) / 10_000;
+      locked.set(input.wallet, (locked.get(input.wallet) ?? 0) + collateral);
+      const id = BigInt(chainLoans.size + 1);
+      chainLoans.set(id, {
+        id, guarantor: input.wallet, beneficiaryHandle: input.beneficiaryHandle, partner: input.partner,
+        principalUsd: input.principalUsd, ltvBps, collateralLockedUsd: collateral, collateralReleasedUsd: 0,
+        installmentCount: input.installmentCount, intervalSecs: input.intervalSecs, originatedAt: new Date(),
+        installmentsPaid: 0, totalRepaidUsd: 0, nextDue: new Date(), graceExpiresAt: null, status: "active",
+      });
+      return id;
+    }),
+  loan: async (id: bigint) => chainLoans.get(id) ?? null,
   submitSigned: async (tx: { hash: string }, signedXdr: string) => {
     const entry = prepared.get(tx.hash);
     if (!entry || signedXdr !== `signed:${entry.xdr}`) {
       throw new ChainError("The signed transaction is not the one that was prepared");
     }
-    balances.set(entry.wallet, (balances.get(entry.wallet) ?? 0) + entry.delta);
     prepared.delete(tx.hash);
-    return { hash: tx.hash, returnValue: undefined };
+    return { hash: tx.hash, returnValue: entry.apply() };
   },
 } as unknown as ChainPort;
 
@@ -51,13 +78,17 @@ let close: () => Promise<void>;
 let token = "";
 let wallet = "";
 
+const savedPartner = config.chain.partnerAddress;
+
 before(async () => {
+  config.chain.partnerAddress = "GC26UMM7ICTUPT5DDJPQS6BM7Q4TJ2K7QCY4LMIQE5ETI7VDBJCPPE6R";
   ({ base, close } = await startTestServer());
   const signedIn = await signIn(base);
   token = signedIn.token;
   wallet = signedIn.key.publicKey();
 });
 after(async () => {
+  config.chain.partnerAddress = savedPartner;
   setChain(null);
   await close();
 });
@@ -155,5 +186,71 @@ test("with a handle secret configured, a new beneficiary gets their on-chain han
     assert.equal(created.body.chain_handle, undefined, "the handle is not part of the API");
   } finally {
     config.chain.beneficiaryHandleSecret = saved;
+  }
+});
+
+test("a loan is priced, signed in the wallet, and recorded against its on-chain ID", async () => {
+  setChain(fakeChain);
+  const saved = config.chain.beneficiaryHandleSecret;
+  config.chain.beneficiaryHandleSecret = "test-handle-secret";
+  try {
+    const b = await call("POST", "/beneficiaries", {
+      phone_number: "+2348000000888",
+      local_kyc_ref: "PARTNER-NG-888",
+      local_currency: "NGN",
+      display_name: "Chidi",
+    });
+    assert.equal(b.status, 201);
+    const funded = await call("POST", "/vaults/deposit/prepare", { amount_usd: 1000 });
+    await call("POST", "/vaults/deposit/submit", { hash: funded.body.hash, signed_xdr: `signed:${funded.body.xdr}` });
+
+    const request = {
+      beneficiary_id: b.body.id,
+      principal_local: 400000,
+      local_currency: "NGN",
+      installment_count: 4,
+      installment_interval_days: 30,
+    };
+    const direct = await call("POST", "/loans", request);
+    assert.equal(direct.status, 409);
+    assert.match(direct.body.message, /loans\/prepare/);
+
+    const p = await call("POST", "/loans/prepare", request);
+    assert.equal(p.status, 200, JSON.stringify(p.body));
+
+    // The chain now sets the same LTV the backend computed, so it locks the collateral that was quoted.
+    const handle = beneficiaries.get(b.body.id)!.chainHandle!;
+    const qualified = (await call("GET", `/beneficiaries/${b.body.id}/reputation`)).body.qualified_ltv;
+    assert.equal(await fakeChain.requiredLtvBps(handle), Math.round(qualified * 10_000));
+
+    const s = await call("POST", "/loans/submit", { hash: p.body.hash, signed_xdr: `signed:${p.body.xdr}` });
+    assert.equal(s.status, 201, JSON.stringify(s.body));
+    assert.equal(s.body.principal_usd, 253.16, "priced at the partner's rate");
+    assert.equal(s.body.schedule.length, 4);
+
+    const onChain = chainLoans.get(1n);
+    const view = (await call("GET", `/loans/${s.body.id}`)).body;
+    // The chain carries USDC's sub-cent precision; the API reports to the cent.
+    assert.equal(view.collateral_locked_usd, Math.round(onChain.collateralLockedUsd * 100) / 100, "collateral as locked on chain");
+    assert.equal(view.ltv_ratio, onChain.ltvBps / 10_000);
+
+    const again = await call("POST", "/loans/submit", { hash: p.body.hash, signed_xdr: `signed:${p.body.xdr}` });
+    assert.equal(again.status, 404, "an origination is submitted once");
+  } finally {
+    config.chain.beneficiaryHandleSecret = saved;
+  }
+});
+
+test("without a partner address configured, a loan cannot be prepared", async () => {
+  setChain(fakeChain);
+  const saved = config.chain.partnerAddress;
+  try {
+    config.chain.partnerAddress = "";
+    const res = await call("POST", "/loans/prepare", {
+      beneficiary_id: "any", principal_local: 1, local_currency: "NGN", installment_count: 1,
+    });
+    assert.equal(res.status, 503);
+  } finally {
+    config.chain.partnerAddress = saved;
   }
 });

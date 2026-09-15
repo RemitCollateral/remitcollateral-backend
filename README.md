@@ -80,6 +80,7 @@ SESSION_TTL_SECONDS=43200
 VERIFIER_SECRET_KEY=
 ORACLE_SECRET_KEY=
 BENEFICIARY_HANDLE_SECRET=
+PARTNER_STELLAR_ADDRESS=
 
 # Scheduled jobs
 LIFECYCLE_SWEEP_INTERVAL_MINUTES=60
@@ -126,7 +127,9 @@ A beneficiary's handle is an HMAC rather than a plain hash because everything on
 2. The wallet signs `xdr`, for example with Freighter's `signTransaction`.
 3. `POST /api/v1/vaults/deposit/submit` (or `withdraw/submit`) with `{ hash, signed_xdr }` returns the updated vault.
 
-A prepared transaction is valid for five minutes, only for the guarantor it was prepared for, and only if the signed envelope is exactly what was prepared. Without the contracts configured, `POST /vaults/deposit` and `/withdraw` record collateral in the backend's own accounting, as before. Loans, repayments and liquidation are being moved onto the chain next. `npm run test:chain` exercises the client against a real deployment — set the three contract IDs, `VERIFIER_SECRET_KEY`, `ORACLE_SECRET_KEY`, and `CHAIN_TEST_GUARANTOR_SECRET` and `CHAIN_TEST_PARTNER_SECRET` for funded testnet accounts.
+A prepared transaction is valid for five minutes, only for the guarantor it was prepared for, and only if the signed envelope is exactly what was prepared. Without the contracts configured, `POST /vaults/deposit` and `/withdraw` record collateral in the backend's own accounting, as before. Loans follow the same pattern: `POST /api/v1/loans/prepare` prices the loan at the partner's rate and returns the origination to sign, and `POST /api/v1/loans/submit` sends it, records the loan against its on-chain ID, and has the partner disburse it. Before preparing, the backend publishes the beneficiary's reputation if the chain's copy is out of date, so the collateral the ledger locks is the collateral the backend quoted. Repayments and liquidation are being moved onto the chain next.
+
+The contracts cannot yet cancel a loan whose disbursement fails after its collateral is locked. Such a failure is recorded and audited as `LOAN_DISBURSEMENT_FAILED` for an operator to resolve. `npm run test:chain` exercises the client against a real deployment — set the three contract IDs, `VERIFIER_SECRET_KEY`, `ORACLE_SECRET_KEY`, and `CHAIN_TEST_GUARANTOR_SECRET` and `CHAIN_TEST_PARTNER_SECRET` for funded testnet accounts.
 
 ### Running
 

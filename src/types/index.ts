@@ -26,14 +26,28 @@ export interface Beneficiary {
   createdAt: string;
 }
 
+/** A loan priced for origination on chain, held while the guarantor signs. */
+export interface ChainLoanDraft {
+  beneficiaryId: string;
+  principalLocal: number;
+  localCurrency: string;
+  installmentCount: number;
+  intervalDays: number;
+  purpose?: string;
+  fxRate: number;
+  principalUsd: number;
+  ltvRatio: number;
+}
+
 /** A transaction prepared for a guarantor's wallet to sign, awaiting its signature. */
 export interface PendingSignature {
   hash: string;
   guarantorId: string;
-  kind: "deposit" | "withdraw";
+  kind: "deposit" | "withdraw" | "originate";
   amountUsd: number;
   xdr: string;
   expiresAt: string;
+  loanDraft?: ChainLoanDraft;
 }
 
 /**
@@ -92,6 +106,8 @@ export interface Loan {
   status: LoanStatus;
   graceExpiresAt?: string;
   purpose?: string;
+  /** The loan's ID on the LoanLedger contract, once originated on chain. */
+  chainLoanId?: string;
   createdAt: string;
   updatedAt: string;
 }

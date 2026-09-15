@@ -81,6 +81,8 @@ export const config = {
       (["mainnet", "public"].includes(process.env.STELLAR_NETWORK || "") ? Networks.PUBLIC : Networks.TESTNET),
     verifierSecretKey: process.env.VERIFIER_SECRET_KEY || "",
     oracleSecretKey: process.env.ORACLE_SECRET_KEY || "",
+    /** The off-ramp partner's Stellar address, as registered on the LoanLedger. */
+    partnerAddress: process.env.PARTNER_STELLAR_ADDRESS || "",
     /** Keys the HMAC that turns phone number + KYC reference into a beneficiary's on-chain handle. */
     beneficiaryHandleSecret: process.env.BENEFICIARY_HANDLE_SECRET || "",
   },

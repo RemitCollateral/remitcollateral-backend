@@ -51,6 +51,9 @@ const chainClient = process.env.NODE_ENV === "test" ? null : chainFromConfig();
 if (chainClient && !config.chain.beneficiaryHandleSecret) {
   throw new Error("BENEFICIARY_HANDLE_SECRET must be set when the contracts are configured");
 }
+if (chainClient && !config.chain.partnerAddress) {
+  throw new Error("PARTNER_STELLAR_ADDRESS must be set when the contracts are configured");
+}
 setChain(chainClient);
 
 // ─── Middleware ───────────────────────────────────────────────────────

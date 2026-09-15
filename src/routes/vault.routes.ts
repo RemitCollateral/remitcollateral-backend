@@ -5,14 +5,12 @@ import { serializeVault } from "../api/serializers";
 import { activeChain } from "../chain/runtime";
 import { ChainError } from "../chain/errors";
 import { config } from "../config";
-import { guarantors, pendingSignatures } from "../stores";
+import { guarantors } from "../stores";
 import { logAuditEvent } from "../services/audit.service";
 import { PendingSignature } from "../types";
+import { forgetPending, pendingFor, rememberPending } from "../api/pending";
 
 export const vaultRouter = Router();
-
-/** How long a prepared transaction waits for its signature: the SDK's default timeout. */
-const SIGNING_WINDOW_MS = 5 * 60 * 1000;
 
 const positiveAmount = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -112,18 +110,7 @@ function prepareRoute(kind: Kind) {
           ? await chain.prepareDeposit(wallet, amountUsd)
           : await chain.prepareWithdraw(wallet, amountUsd);
 
-      const now = Date.now();
-      for (const [hash, pending] of pendingSignatures) {
-        if (Date.parse(pending.expiresAt) <= now) pendingSignatures.delete(hash);
-      }
-      pendingSignatures.set(prepared.hash, {
-        hash: prepared.hash,
-        guarantorId,
-        kind,
-        amountUsd,
-        xdr: prepared.xdr,
-        expiresAt: new Date(now + SIGNING_WINDOW_MS).toISOString(),
-      });
+      rememberPending({ hash: prepared.hash, guarantorId, kind, amountUsd, xdr: prepared.xdr });
 
       return res.json({
         xdr: prepared.xdr,
@@ -152,22 +139,15 @@ function submitRoute(kind: Kind) {
       return res.status(409).json({ error: `This backend is not connected to the contracts: use POST /vaults/${kind}` });
     }
     const guarantorId = (req as any).guarantorId as string;
-    const hash = typeof req.body?.hash === "string" ? req.body.hash : "";
     const signedXdr = typeof req.body?.signed_xdr === "string" ? req.body.signed_xdr : "";
-
-    const pending = pendingSignatures.get(hash);
-    if (
-      !pending ||
-      pending.guarantorId !== guarantorId ||
-      pending.kind !== kind ||
-      Date.parse(pending.expiresAt) <= Date.now()
-    ) {
+    const pending = pendingFor(req.body?.hash, guarantorId, kind);
+    if (!pending) {
       return res.status(404).json({ error: "No such transaction is waiting for your signature" });
     }
 
     try {
       const sent = await chain.submitSigned(pending, signedXdr);
-      pendingSignatures.delete(hash);
+      forgetPending(pending.hash);
 
       logAuditEvent({
         eventType: "VAULT",
