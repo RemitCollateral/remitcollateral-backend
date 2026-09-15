@@ -76,6 +76,11 @@ SETTLEMENT_ADDRESS=GSETTLEMENTADDRESS1234567890
 AUTH_DOMAIN=RemitCollateral
 SESSION_TTL_SECONDS=43200
 
+# The backend's on-chain roles (it holds no contract admin key)
+VERIFIER_SECRET_KEY=
+ORACLE_SECRET_KEY=
+BENEFICIARY_HANDLE_SECRET=
+
 # Scheduled jobs
 LIFECYCLE_SWEEP_INTERVAL_MINUTES=60
 ```
@@ -100,6 +105,22 @@ unset, so an empty `.env` runs the protocol exactly as specified.
 #### Exchange rates
 
 A loan's principal is set in the beneficiary's local currency and priced in USD at the off-ramp partner's rate when it is originated, since that is the rate the partner pays out at. The rate is recorded on the loan, so its installments and collateral releases are measured against it for the loan's whole life. A currency the partner cannot pay out in is refused. The mock partner quotes fixed indicative rates for NGN, GHS, XOF, KES and USD.
+
+### On-chain roles
+
+The backend acts on chain in exactly three roles, and holds no contract admin key: the contracts' admin is a multisig council.
+
+| Role | Key | What the backend does with it |
+|------|-----|-------------------------------|
+| Verifier | `VERIFIER_SECRET_KEY` | Co-signs each repayment attestation with the off-ramp partner, and pays the fees for the permissionless liquidation cranks |
+| Oracle | `ORACLE_SECRET_KEY` | Publishes each beneficiary's reputation score, which sets the LTV their loans need |
+| — | `BENEFICIARY_HANDLE_SECRET` | Keys the HMAC that derives a beneficiary's on-chain handle from their phone number and KYC reference |
+
+Guarantor actions (deposits, withdrawals, originating a loan) must be signed by the guarantor's own wallet, so the backend prepares those transactions, the wallet signs them, and the backend submits them, refusing any signed transaction that is not exactly the one it prepared.
+
+A beneficiary's handle is an HMAC rather than a plain hash because everything on chain is public, and phone numbers and KYC references are short and patterned enough to enumerate. A plain hash would let anyone link on-chain loans to real people.
+
+`src/chain` is the live client for all of this. The services still run against the mock gateway; wiring them to the chain client is the next step. `npm run test:chain` exercises the client against a real deployment — set the three contract IDs, `VERIFIER_SECRET_KEY`, `ORACLE_SECRET_KEY`, and `CHAIN_TEST_GUARANTOR_SECRET` and `CHAIN_TEST_PARTNER_SECRET` for funded testnet accounts.
 
 ### Running
 
@@ -277,6 +298,7 @@ remitcollateral-backend/
 │   ├── types/              # Domain entities, DTOs & adapter types
 │   ├── adapters/           # Off-ramp adapter interface & MockOffRampAdapter
 │   ├── contracts/          # ContractGateway interface & MockContractGateway
+│   ├── chain/              # Live client for the Soroban contracts
 │   ├── auth/               # Wallet signature checks, challenges & sessions
 │   ├── api/                # Response serializers (the API's wire format) & loan views
 │   ├── testing/            # Test helpers (the API on a local port)

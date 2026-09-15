@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { Networks } from "@stellar/stellar-sdk";
 
 dotenv.config();
 
@@ -66,7 +67,21 @@ export const config = {
   /** Named in the sign-in message, so users can see which service they are signing in to. */
   authDomain: process.env.AUTH_DOMAIN || "RemitCollateral",
 
-  // Admin secret
-  adminSecretKey: process.env.ADMIN_SECRET_KEY || "",
+  // Operator wallet for /admin and /audit, by sign-in. This is not a contract
+  // key: the backend holds no contract admin key, since the contracts' admin
+  // is a multisig council.
   adminWalletAddress: process.env.ADMIN_WALLET_ADDRESS || "",
+
+  // The backend's own on-chain roles. It co-signs repayment attestations as
+  // the verifier, publishes reputation scores as the oracle, and pays the fees
+  // for the permissionless liquidation cranks.
+  chain: {
+    networkPassphrase:
+      process.env.STELLAR_NETWORK_PASSPHRASE ||
+      (["mainnet", "public"].includes(process.env.STELLAR_NETWORK || "") ? Networks.PUBLIC : Networks.TESTNET),
+    verifierSecretKey: process.env.VERIFIER_SECRET_KEY || "",
+    oracleSecretKey: process.env.ORACLE_SECRET_KEY || "",
+    /** Keys the HMAC that turns phone number + KYC reference into a beneficiary's on-chain handle. */
+    beneficiaryHandleSecret: process.env.BENEFICIARY_HANDLE_SECRET || "",
+  },
 };

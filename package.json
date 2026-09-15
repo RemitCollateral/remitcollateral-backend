@@ -8,7 +8,8 @@
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "test": "NODE_ENV=test node --import tsx --test \"src/**/*.test.ts\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:chain": "NODE_ENV=test node --import tsx --test \"src/**/*.chain-test.ts\""
   },
   "dependencies": {
     "@stellar/stellar-sdk": "^17.1.0",
