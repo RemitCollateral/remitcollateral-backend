@@ -3,6 +3,7 @@ import {
   Guarantor,
   Vault,
   Beneficiary,
+  BeneficiaryLink,
   Loan,
   RemittanceRecord,
   RepaymentAttestation,
@@ -16,6 +17,8 @@ import {
 export const guarantors: Map<string, Guarantor> = new Map();
 export const vaults: Map<string, Vault> = new Map();
 export const beneficiaries: Map<string, Beneficiary> = new Map();
+/** Guarantor ID → beneficiary ID → the guarantor's link to that beneficiary. */
+export const beneficiaryLinks: Map<string, Map<string, BeneficiaryLink>> = new Map();
 export const loans: Map<string, Loan> = new Map();
 export const remittanceRecords: RemittanceRecord[] = [];
 export const repaymentAttestations: RepaymentAttestation[] = [];

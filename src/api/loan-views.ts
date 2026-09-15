@@ -1,4 +1,5 @@
 import { beneficiaries, loans } from "../stores";
+import { linkOf } from "../services/beneficiary.service";
 import { Loan } from "../types";
 import { LoanView, serializeLoanWithBeneficiary } from "./serializers";
 
@@ -8,7 +9,7 @@ export function loanView(loan: Loan, now = Date.now()): LoanView {
   if (!beneficiary) {
     throw new Error(`Loan ${loan.id} references missing beneficiary ${loan.beneficiaryId}`);
   }
-  return serializeLoanWithBeneficiary(loan, beneficiary, now);
+  return serializeLoanWithBeneficiary(loan, beneficiary, linkOf(loan.guarantorId, loan.beneficiaryId), now);
 }
 
 /** Loans needing attention first: grace, then active with missed payments. */

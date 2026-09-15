@@ -4,6 +4,7 @@ import { loans } from "../stores";
 import * as loanService from "../services/loan.service";
 import { serializeLoan, serializeSchedule } from "../api/serializers";
 import { loanView, loanViewsFor } from "../api/loan-views";
+import { linkOf } from "../services/beneficiary.service";
 
 export const loanRouter = Router();
 
@@ -35,6 +36,11 @@ loanRouter.post("/", walletAuth, async (req: Request, res: Response) => {
       error:
         "beneficiary_id, local_currency, a positive principal_local and a whole installment_count of at least 1 are required",
     });
+  }
+
+  // Only for a beneficiary on the guarantor's own list.
+  if (!linkOf(guarantorId, beneficiaryId)) {
+    return res.status(404).json({ error: "Beneficiary not found" });
   }
 
   try {

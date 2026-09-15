@@ -11,6 +11,7 @@ import {
 import { logAuditEvent } from "../services/audit.service";
 import { refreshReputationScore } from "../services/reputation.service";
 import { serializeRemittance } from "../api/serializers";
+import { linkOf } from "../services/beneficiary.service";
 
 export const remittanceRouter = Router();
 
@@ -42,7 +43,8 @@ remittanceRouter.post("/", walletAuth, (req: Request, res: Response) => {
   // than accepted from the body.
   const source: RemittanceSource = "self_declared";
 
-  const beneficiary = beneficiaries.get(beneficiaryId);
+  // Only for a beneficiary on the guarantor's own list.
+  const beneficiary = linkOf(guarantorId, beneficiaryId) ? beneficiaries.get(beneficiaryId) : undefined;
   if (!beneficiary) {
     return res.status(404).json({ error: "Beneficiary not found" });
   }

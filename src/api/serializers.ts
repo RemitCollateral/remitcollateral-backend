@@ -9,6 +9,7 @@
 import { config } from "../config";
 import {
   Beneficiary,
+  BeneficiaryLink,
   Guarantor,
   InstallmentScheduleItem,
   Loan,
@@ -43,15 +44,19 @@ export function serializeVault(vault: Vault) {
   };
 }
 
-export function serializeBeneficiary(beneficiary: Beneficiary) {
+/**
+ * A beneficiary as one guarantor sees them: with that guarantor's own name for
+ * them, and the date that guarantor added them.
+ */
+export function serializeBeneficiary(beneficiary: Beneficiary, link?: BeneficiaryLink) {
   return {
     id: beneficiary.id,
     phone_number: beneficiary.phoneNumber,
     local_kyc_ref: beneficiary.localKycRef || null,
     reputation_score: unitScore(beneficiary.reputationScore),
-    display_name: beneficiary.displayName ?? null,
+    display_name: link?.displayName ?? null,
     local_currency: beneficiary.localCurrency,
-    created_at: beneficiary.createdAt,
+    created_at: link?.createdAt ?? beneficiary.createdAt,
   };
 }
 
@@ -107,7 +112,12 @@ export function serializeLoan(loan: Loan, now = Date.now()) {
 }
 
 /** A loan joined with its beneficiary and the figures the dashboard shows beside it. */
-export function serializeLoanWithBeneficiary(loan: Loan, beneficiary: Beneficiary, now = Date.now()) {
+export function serializeLoanWithBeneficiary(
+  loan: Loan,
+  beneficiary: Beneficiary,
+  link?: BeneficiaryLink,
+  now = Date.now(),
+) {
   const base = serializeLoan(loan, now);
   const totalRepaidLocal = loan.schedule
     .filter((item) => item.status === "repaid")
@@ -115,7 +125,7 @@ export function serializeLoanWithBeneficiary(loan: Loan, beneficiary: Beneficiar
 
   return {
     ...base,
-    beneficiary: serializeBeneficiary(beneficiary),
+    beneficiary: serializeBeneficiary(beneficiary, link),
     total_repaid_local: round2(totalRepaidLocal),
     outstanding_local: round2(loan.principalLocal - totalRepaidLocal),
     // Locked now, not at origination: zero once the loan has settled.

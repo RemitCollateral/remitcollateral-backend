@@ -58,14 +58,15 @@ after(async () => {
   await close();
 });
 
-const call = async (method: string, path: string, body?: unknown) => {
+const callAs = async (as: string, method: string, path: string, body?: unknown) => {
   const res = await fetch(`${base}/api/v1${path}`, {
     method,
-    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    headers: { "content-type": "application/json", authorization: `Bearer ${as}` },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: (await res.json()) as any };
 };
+const call = (method: string, path: string, body?: unknown) => callAs(token, method, path, body);
 
 test("GET /guarantors/me is the guarantor itself", async () => {
   const { status, body } = await call("GET", "/guarantors/me");
@@ -86,7 +87,9 @@ test("the vault reads and deposits as a VaultSummary", async () => {
   assert.equal(funded.body.available_amount, 5000);
 });
 
-test("beneficiaries register and read in the frontend's shape", async () => {
+test("beneficiaries register, list and read in the frontend's shape", async () => {
+  assert.deepEqual((await call("GET", "/beneficiaries")).body, [], "a new guarantor supports nobody yet");
+
   const missingKyc = await call("POST", "/beneficiaries", { phone_number: "+2348000000001", local_currency: "NGN" });
   assert.equal(missingKyc.status, 400);
   assert.match(missingKyc.body.message, /local_kyc_ref/, "the reason reaches the frontend as `message`");
@@ -107,23 +110,83 @@ test("beneficiaries register and read in the frontend's shape", async () => {
   const read = await call("GET", `/beneficiaries/${beneficiaryId}`);
   assertShape(read.body, BENEFICIARY, "beneficiary read");
 
+  const list = await call("GET", "/beneficiaries");
+  assert.ok(Array.isArray(list.body), "GET /beneficiaries is an array");
+  assert.equal(list.body.length, 1);
+  assertShape(list.body[0], BENEFICIARY, "listed beneficiary");
+
   const reputation = await call("GET", `/beneficiaries/${beneficiaryId}/reputation`);
   const r = assertShape(reputation.body, REPUTATION, "reputation");
   assert.ok(r.composite_score >= 0 && r.composite_score <= 1);
   assert.ok(r.qualified_ltv >= 1.1 && r.qualified_ltv <= 1.5);
 });
 
-test("a duplicate phone number is refused without disclosing the existing beneficiary", async () => {
-  const other = await signIn(base);
-  const res = await fetch(`${base}/api/v1/beneficiaries`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${other.token}` },
-    body: JSON.stringify({ phone_number: "+2348000000001", local_kyc_ref: "X", local_currency: "NGN" }),
+test("two guarantors can support the same beneficiary, each with their own name for them", async () => {
+  const sibling = await signIn(base);
+  const linked = await callAs(sibling.token, "POST", "/beneficiaries", {
+    phone_number: "+2348000000001",
+    local_kyc_ref: "PARTNER-NG-1",
+    display_name: "Mum",
+    local_currency: "NGN",
+  });
+  assert.equal(linked.status, 201, JSON.stringify(linked.body));
+  assert.equal(linked.body.id, beneficiaryId, "the same person, not a duplicate");
+  assert.equal(linked.body.display_name, "Mum");
+
+  const siblingList = await callAs(sibling.token, "GET", "/beneficiaries");
+  assert.deepEqual(siblingList.body.map((b: any) => b.id), [beneficiaryId]);
+  // Each guarantor keeps their own name for them.
+  assert.equal((await call("GET", `/beneficiaries/${beneficiaryId}`)).body.display_name, "Amaka Obi");
+});
+
+test("a mismatched KYC reference is refused without disclosing anything", async () => {
+  const stranger = await signIn(base);
+  const res = await callAs(stranger.token, "POST", "/beneficiaries", {
+    phone_number: "+2348000000001",
+    local_kyc_ref: "GUESSED",
+    local_currency: "NGN",
   });
   assert.equal(res.status, 409);
-  const body = (await res.json()) as Record<string, unknown>;
-  assert.equal(body.beneficiary, undefined);
-  assert.ok(!JSON.stringify(body).includes("PARTNER-NG-1"));
+  assert.equal(res.body.beneficiary, undefined);
+  for (const secret of ["PARTNER-NG-1", "Amaka", "Mum", beneficiaryId]) {
+    assert.ok(!JSON.stringify(res.body).includes(secret), `does not disclose ${secret}`);
+  }
+});
+
+test("adding the same beneficiary twice is refused", async () => {
+  const again = await call("POST", "/beneficiaries", {
+    phone_number: "+2348000000001",
+    local_kyc_ref: "PARTNER-NG-1",
+    local_currency: "NGN",
+  });
+  assert.equal(again.status, 409);
+});
+
+test("beneficiaries are private to the guarantors who support them", async () => {
+  const stranger = await signIn(base);
+  await callAs(stranger.token, "POST", "/vaults/deposit", { amount_usd: 5000 });
+
+  assert.deepEqual((await callAs(stranger.token, "GET", "/beneficiaries")).body, []);
+  assert.equal((await callAs(stranger.token, "GET", `/beneficiaries/${beneficiaryId}`)).status, 404);
+  assert.equal((await callAs(stranger.token, "GET", `/beneficiaries/${beneficiaryId}/reputation`)).status, 404);
+
+  const loan = await callAs(stranger.token, "POST", "/loans", {
+    beneficiary_id: beneficiaryId,
+    principal_local: 100,
+    local_currency: "NGN",
+    installment_count: 2,
+    installment_interval_days: 30,
+  });
+  assert.equal(loan.status, 404, "no loans to someone not on your list");
+
+  const remittance = await callAs(stranger.token, "POST", "/remittances", {
+    beneficiary_id: beneficiaryId,
+    amount_usd: 50,
+    local_amount: 79000,
+    local_currency: "NGN",
+    sent_at: new Date(Date.now() - 86_400_000).toISOString(),
+  });
+  assert.equal(remittance.status, 404, "no remittances to someone not on your list");
 });
 
 test("a new loan comes back as a Loan with a live schedule", async () => {

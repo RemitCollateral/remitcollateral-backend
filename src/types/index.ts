@@ -20,8 +20,19 @@ export interface Beneficiary {
   phoneNumber: string;
   localKycRef: string;
   reputationScore: number;    // composite score (0 to 100)
-  displayName?: string;
   localCurrency: string;      // ISO 4217, the currency loans to them are made in
+  createdAt: string;
+}
+
+/**
+ * A guarantor's link to a beneficiary they support. A beneficiary is one
+ * person, identified by phone number and the partner's KYC reference, and may
+ * be supported by several guarantors, each keeping their own name for them.
+ */
+export interface BeneficiaryLink {
+  guarantorId: string;
+  beneficiaryId: string;
+  displayName?: string;
   createdAt: string;
 }
 

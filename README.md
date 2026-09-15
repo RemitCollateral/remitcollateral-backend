@@ -161,9 +161,12 @@ Each challenge works once and expires after five minutes. Endpoints marked **Adm
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/v1/beneficiaries` | Wallet | Register a beneficiary (phone + KYC ref) |
-| `GET` | `/api/v1/beneficiaries/:id` | Wallet | Get beneficiary details & reputation score |
+| `GET` | `/api/v1/beneficiaries` | Wallet | The beneficiaries you support |
+| `POST` | `/api/v1/beneficiaries` | Wallet | Add a beneficiary (phone + partner KYC ref), or link to one another guarantor supports |
+| `GET` | `/api/v1/beneficiaries/:id` | Wallet | A beneficiary you support, with their reputation score |
 | `GET` | `/api/v1/beneficiaries/:id/reputation` | Wallet | Detailed reputation score breakdown |
+
+A beneficiary is one person, however many guarantors support them. Adding a phone number that is already registered links you to that same person and their shared credit history, but only if the partner KYC reference matches as well; a phone number alone is not enough. Each guarantor keeps their own name for them, and can see, lend to and record remittances for only the beneficiaries on their own list.
 
 ### Loans
 
