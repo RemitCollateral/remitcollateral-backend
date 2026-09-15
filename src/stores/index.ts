@@ -10,6 +10,7 @@ import {
   AuditEvent,
   AuthChallenge,
   Session,
+  PendingSignature,
 } from "../types";
 
 // ─── In-Memory Stores ────────────────────────────────────────────────
@@ -25,6 +26,8 @@ export const repaymentAttestations: RepaymentAttestation[] = [];
 export const auditEvents: AuditEvent[] = [];
 /** Outstanding sign-in challenges, per wallet address. */
 export const authChallenges: Map<string, AuthChallenge[]> = new Map();
+/** Transactions prepared for a guarantor's wallet to sign, keyed by transaction hash. */
+export const pendingSignatures: Map<string, PendingSignature> = new Map();
 /** Live sessions, keyed by the SHA-256 hash of their token. */
 export const sessions: Map<string, Session> = new Map();
 

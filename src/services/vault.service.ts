@@ -7,6 +7,7 @@ import {
 } from "../stores";
 import { ContractGateway } from "../contracts/gateway.interface";
 import { logAuditEvent } from "./audit.service";
+import { activeChain } from "../chain/runtime";
 
 // ─── Module-level gateway reference ──────────────────────────────────
 
@@ -142,6 +143,21 @@ export async function withdraw(
   });
 
   return vault;
+}
+
+/**
+ * The guarantor's vault as it currently stands. With the contracts connected,
+ * the figures are read from chain, which holds the collateral; otherwise they
+ * are the backend's own accounting.
+ */
+export async function currentVault(guarantorId: string): Promise<Vault> {
+  const vault = getOrCreateVault(guarantorId);
+  const chain = activeChain();
+  const wallet = guarantors.get(guarantorId)?.walletAddress;
+  if (!chain || !wallet) return vault;
+
+  const position = await chain.vaultPosition(wallet);
+  return { ...vault, collateralBalance: position.balanceUsd, lockedAmount: position.lockedUsd };
 }
 
 /**

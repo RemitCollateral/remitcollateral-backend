@@ -120,7 +120,13 @@ Guarantor actions (deposits, withdrawals, originating a loan) must be signed by 
 
 A beneficiary's handle is an HMAC rather than a plain hash because everything on chain is public, and phone numbers and KYC references are short and patterned enough to enumerate. A plain hash would let anyone link on-chain loans to real people.
 
-`src/chain` is the live client for all of this. The services still run against the mock gateway; wiring them to the chain client is the next step. `npm run test:chain` exercises the client against a real deployment — set the three contract IDs, `VERIFIER_SECRET_KEY`, `ORACLE_SECRET_KEY`, and `CHAIN_TEST_GUARANTOR_SECRET` and `CHAIN_TEST_PARTNER_SECRET` for funded testnet accounts.
+`src/chain` is the live client for all of this. When the three contract IDs are configured the backend connects to it, and `GET /api/v1/chain` reports `{ enabled: true }`. Vault figures are then read from chain, and deposits and withdrawals are signed by the guarantor's wallet:
+
+1. `POST /api/v1/vaults/deposit/prepare` (or `withdraw/prepare`) with `{ amount_usd }` returns `{ xdr, hash, network_passphrase }`.
+2. The wallet signs `xdr`, for example with Freighter's `signTransaction`.
+3. `POST /api/v1/vaults/deposit/submit` (or `withdraw/submit`) with `{ hash, signed_xdr }` returns the updated vault.
+
+A prepared transaction is valid for five minutes, only for the guarantor it was prepared for, and only if the signed envelope is exactly what was prepared. Without the contracts configured, `POST /vaults/deposit` and `/withdraw` record collateral in the backend's own accounting, as before. Loans, repayments and liquidation are being moved onto the chain next. `npm run test:chain` exercises the client against a real deployment — set the three contract IDs, `VERIFIER_SECRET_KEY`, `ORACLE_SECRET_KEY`, and `CHAIN_TEST_GUARANTOR_SECRET` and `CHAIN_TEST_PARTNER_SECRET` for funded testnet accounts.
 
 ### Running
 

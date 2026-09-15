@@ -21,7 +21,19 @@ export interface Beneficiary {
   localKycRef: string;
   reputationScore: number;    // composite score (0 to 100)
   localCurrency: string;      // ISO 4217, the currency loans to them are made in
+  /** Keyed hash of phone + KYC reference: how the contracts name them. Set when a handle secret is configured. */
+  chainHandle?: string;
   createdAt: string;
+}
+
+/** A transaction prepared for a guarantor's wallet to sign, awaiting its signature. */
+export interface PendingSignature {
+  hash: string;
+  guarantorId: string;
+  kind: "deposit" | "withdraw";
+  amountUsd: number;
+  xdr: string;
+  expiresAt: string;
 }
 
 /**

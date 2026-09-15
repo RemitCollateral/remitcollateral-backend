@@ -49,7 +49,7 @@ guarantorRouter.get("/me", walletAuth, (req: Request, res: Response) => {
  * status is derived from the due dates on read, so the risk shown never lags
  * the lifecycle sweep that advances loan status (§3.5).
  */
-guarantorRouter.get("/me/dashboard", walletAuth, (req: Request, res: Response) => {
+guarantorRouter.get("/me/dashboard", walletAuth, async (req: Request, res: Response) => {
   const guarantorId = (req as any).guarantorId as string;
   const guarantor = guarantorId ? guarantors.get(guarantorId) : undefined;
   if (!guarantor) {
@@ -75,7 +75,7 @@ guarantorRouter.get("/me/dashboard", walletAuth, (req: Request, res: Response) =
 
   return res.json({
     guarantor: serializeGuarantor(guarantor),
-    vault: serializeVault(vaultService.getOrCreateVault(guarantorId)),
+    vault: serializeVault(await vaultService.currentVault(guarantorId)),
     loans,
     upcoming_installments: upcoming,
     at_risk_loans: open.filter((loan) => loan.status === "grace" || loan.missed_installments > 0),

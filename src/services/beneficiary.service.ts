@@ -1,5 +1,7 @@
 import { Beneficiary, BeneficiaryLink } from "../types";
 import { beneficiaries, beneficiaryLinks, generateId } from "../stores";
+import { config } from "../config";
+import { beneficiaryHandle } from "../chain/handle";
 
 export class BeneficiaryConflict extends Error {}
 
@@ -62,6 +64,9 @@ export function addBeneficiary(
       localKycRef: input.localKycRef,
       reputationScore: 0,
       localCurrency: input.localCurrency,
+      chainHandle: config.chain.beneficiaryHandleSecret
+        ? beneficiaryHandle(input.phoneNumber, input.localKycRef, config.chain.beneficiaryHandleSecret)
+        : undefined,
       createdAt: now,
     };
     beneficiaries.set(beneficiary.id, beneficiary);

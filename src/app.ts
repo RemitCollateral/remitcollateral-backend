@@ -19,6 +19,10 @@ import { remittanceRouter } from "./routes/remittance.routes";
 import { auditRouter } from "./routes/audit.routes";
 import { adminRouter } from "./routes/admin.routes";
 import { fxRouter } from "./routes/fx.routes";
+import { chainRouter } from "./routes/chain.routes";
+import { config } from "./config";
+import { chainFromConfig } from "./chain";
+import { setChain } from "./chain/runtime";
 
 // ─── Initialize ──────────────────────────────────────────────────────
 
@@ -39,6 +43,15 @@ remittanceService.setOffRampAdapter(offRampAdapter);
 loanService.setContractGateway(contractGateway);
 vaultService.setContractGateway(contractGateway);
 liquidationService.setContractGateway(contractGateway);
+
+// The live contracts, when a deployment is configured. Without one the
+// services keep their own accounting, as in development. Tests never reach a
+// live network: they run against that accounting, or install a fake chain.
+const chainClient = process.env.NODE_ENV === "test" ? null : chainFromConfig();
+if (chainClient && !config.chain.beneficiaryHandleSecret) {
+  throw new Error("BENEFICIARY_HANDLE_SECRET must be set when the contracts are configured");
+}
+setChain(chainClient);
 
 // ─── Middleware ───────────────────────────────────────────────────────
 
@@ -85,6 +98,7 @@ app.use("/api/v1/remittances", remittanceRouter);
 app.use("/api/v1/audit", auditRouter);
 app.use("/api/v1/admin", adminRouter);
 app.use("/api/v1/fx", fxRouter);
+app.use("/api/v1/chain", chainRouter);
 
 // Repayment history is also accessible under /api/v1/loans/:id/repayments
 app.use("/api/v1", repaymentRouter);
