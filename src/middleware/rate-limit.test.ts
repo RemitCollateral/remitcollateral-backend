@@ -2,6 +2,7 @@ import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { startTestServer } from "../testing/server";
 import { config } from "../config";
+import app from "../app";
 
 let base = "";
 let close: () => Promise<void>;
@@ -45,4 +46,24 @@ test("POST /repayments/attest is rate limited per presented API key, not globall
   // A different key has its own budget, untouched by the one above.
   const otherKeyStatus = (await attest("rate-limit-test-key-b")).status;
   assert.notEqual(otherKeyStatus, 429);
+});
+
+test("behind a trusted proxy each client gets its own rate-limit budget", async () => {
+  const max = config.rateLimits.authChallengeMax;
+  const challenge = (clientIp: string) =>
+    fetch(`${base}/api/v1/auth/challenge?wallet_address=GINVALIDWALLETADDRESSVALUEHERE`, {
+      headers: { "x-forwarded-for": clientIp },
+    });
+
+  app.set("trust proxy", 1);
+  try {
+    const first: number[] = [];
+    for (let i = 0; i < max + 1; i++) first.push((await challenge("203.0.113.10")).status);
+    assert.equal(first[max], 429, "the first client runs out of budget");
+
+    // A different client behind the same proxy is unaffected.
+    assert.notEqual((await challenge("203.0.113.11")).status, 429);
+  } finally {
+    app.set("trust proxy", false);
+  }
 });

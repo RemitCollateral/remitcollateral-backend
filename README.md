@@ -124,6 +124,11 @@ PORT=4000
 STELLAR_NETWORK=testnet
 STELLAR_RPC_URL=https://soroban-testnet.stellar.org
 
+# Reverse proxies in front of the service (Railway is 1). Without it every
+# visitor shares the proxy's IP and so one rate-limit budget. Leave 0 when the
+# service is reached directly.
+TRUST_PROXY=0
+
 # Browser origins allowed to call this API, comma-separated. Unset allows
 # any origin — fine for local development, not in production.
 CORS_ALLOWED_ORIGINS=

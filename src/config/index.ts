@@ -39,6 +39,16 @@ export const config = {
   mockPartnerSeedHistory: process.env.MOCK_PARTNER_SEED_HISTORY === "true",
 
   /**
+   * How many reverse proxies sit in front of this service (Railway's edge is
+   * one). Behind a proxy `req.ip` is the proxy's address unless Express is told
+   * to read the client's from `X-Forwarded-For`, and every rate limit then
+   * treats all visitors as one client. 0 trusts no proxy, which is right when
+   * the service is reached directly: trusting a header nobody sets lets a
+   * client choose its own IP and walk around the limits.
+   */
+  trustProxy: num("TRUST_PROXY", 0),
+
+  /**
    * Origins allowed to make browser requests to this API. Empty means
    * "allow any origin," which is only acceptable outside production: set
    * this before deploying anywhere real traffic reaches the API.

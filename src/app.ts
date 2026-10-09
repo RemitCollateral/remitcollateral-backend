@@ -39,6 +39,10 @@ import { schedulePersist } from "./persistence";
  */
 const app = express();
 
+// Behind Railway (or any proxy) the client's address is in X-Forwarded-For. Without
+// this every visitor shares the proxy's address, and so one rate-limit bucket.
+if (config.trustProxy > 0) app.set("trust proxy", config.trustProxy);
+
 // Initialize the off-ramp adapter and the Soroban contract gateway. V1 ships
 // mocks for both; swapping in live implementations here is the only change
 // needed once the partner integration and remitcollateral-contracts land.
