@@ -17,6 +17,13 @@ export const sweepRunsTotal = new Counter({
   registers: [registry],
 });
 
+export const persistFlushTotal = new Counter({
+  name: "remitcollateral_persist_flush_total",
+  help: "Writes of the in-memory stores to PostgreSQL, by outcome",
+  labelNames: ["outcome"] as const,
+  registers: [registry],
+});
+
 export const gatewayErrorsTotal = new Counter({
   name: "remitcollateral_contract_gateway_errors_total",
   help: "Contract gateway calls that failed or threw, by method",

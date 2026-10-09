@@ -1,6 +1,7 @@
 import { config } from "../config";
 import { logger } from "../logging/logger";
 import { sweepRunsTotal } from "../metrics";
+import { schedulePersist } from "../persistence";
 import { sweepLoanLifecycle } from "../services/liquidation.service";
 
 const log = logger.child({ component: "lifecycle" });
@@ -52,6 +53,7 @@ async function tick(): Promise<void> {
     log.error({ err }, "sweep failed");
   } finally {
     running = false;
+    schedulePersist();
   }
 }
 
