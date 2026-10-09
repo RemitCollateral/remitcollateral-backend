@@ -26,7 +26,7 @@ The backend API serves as the orchestration layer between the frontend, Soroban 
 | Blockchain | Stellar SDK 17.x / Soroban |
 | Off-Ramp | `OffRampAdapter` interface (`MockOffRampAdapter` for dev/testing) |
 | Contracts | Live client for the deployed contracts (`src/chain`); without a deployment configured, `MockContractGateway` stands in |
-| Database | In-memory data stores (v1 prototype) |
+| Database | In-memory working stores, persisted to PostgreSQL when `DATABASE_URL` is set (see [Persistence](#persistence)) |
 
 ---
 
@@ -55,7 +55,41 @@ What is **not** real in this deployment, so nobody mistakes it for production:
   (`MOCK_PARTNER_SEED_HISTORY` is off), checked against the live service.
 - Repayments and liquidation update only the backend's own records; they are not
   yet settled on chain (see [On-chain roles](#on-chain-roles)).
-- State is in memory and is lost whenever the service restarts.
+- State is persisted to PostgreSQL where `DATABASE_URL` is set, and survives restarts. The live deployment has it set. Without it, state is in memory and is lost whenever the service restarts.
+
+---
+
+## Persistence
+
+The services keep their working set in the in-memory stores (`src/stores`) and
+mutate it synchronously. With `DATABASE_URL` set, `src/persistence` keeps a
+durable copy of those stores in PostgreSQL:
+
+- **At startup** it applies the schema migrations, then loads every table back
+  into the stores before the first request is served. If the database cannot be
+  reached the process exits rather than serve empty stores.
+- **While running** it writes what changed: after any request that is not a
+  `GET`, after each lifecycle sweep, every 5 seconds, and at shutdown. A write
+  that fails is logged, counted in `remitcollateral_persist_flush_total{outcome="failure"}`
+  and retried on the next flush. `GET /health` reports `database: "ok"` or, when
+  the database does not answer, `503` with `database: "unavailable"`.
+- **What is stored:** guarantors, vaults, beneficiaries and their links, loans
+  (with their installment schedules), remittance records, repayment attestations,
+  sessions and audit events. Each table holds one entity per row as JSON.
+  Sign-in challenges and prepared-but-unsigned transactions are short-lived and
+  stay in memory.
+
+What this is not: the database is not queried per request, and it is not
+shared between instances. It assumes a single instance owns the data (as the
+lifecycle sweep already does), and a crash can lose changes made since the last
+flush, normally the few milliseconds after a request finished. Moving to
+per-request transactional queries, or to several instances, would mean porting
+the stores to async queries.
+
+Locally: `docker compose up -d db`, then
+`DATABASE_URL=postgres://remit:remit@localhost:5432/remit npm run dev`. The
+tests that need a database run when `TEST_DATABASE_URL` points at an empty
+scratch database (they drop its tables) and are skipped otherwise; CI sets it.
 
 ---
 
@@ -419,8 +453,9 @@ and are worth stating because they constrain what callers can do:
 - **Wallet identity is proven by a signature.** Protected endpoints take the
   wallet from a session that a signed challenge established, never from the
   request, so one guarantor cannot act as another. The `x-wallet-address`
-  header is no longer accepted. Sessions, like all v1 data, live in memory and
-  end when the server restarts.
+  header is no longer accepted. Sessions are persisted with the rest of the
+  state (when `DATABASE_URL` is set), so a restart does not sign anyone out;
+  without a database they end when the server restarts.
 - **Collateral moves only with the guarantor's signature.** With the contracts
   connected, the backend prepares deposits, withdrawals and loans, and submits
   only the exact transaction it prepared once the guarantor's wallet has signed
@@ -441,7 +476,8 @@ remitcollateral-backend/
 │   ├── auth/               # Wallet signature checks, challenges & sessions
 │   ├── api/                # Response serializers (the API's wire format) & loan views
 │   ├── testing/            # Test helpers (the API on a local port)
-│   ├── stores/             # Centralized in-memory data stores
+│   ├── stores/             # Centralized in-memory data stores (the working set)
+│   ├── persistence/        # PostgreSQL schema, load at startup, write-behind of the stores
 │   ├── services/           # Loan, vault, liquidation, reputation, remittance,
 │   │                       #   notification & audit logic
 │   ├── jobs/               # Scheduled loan lifecycle sweep

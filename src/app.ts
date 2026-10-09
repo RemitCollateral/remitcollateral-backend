@@ -29,6 +29,7 @@ import { chainFromConfig } from "./chain";
 import { setChain } from "./chain/runtime";
 import { requestLogging } from "./middleware/request-logging.middleware";
 import { logger } from "./logging/logger";
+import { schedulePersist } from "./persistence";
 
 // ─── Initialize ──────────────────────────────────────────────────────
 
@@ -105,6 +106,15 @@ app.use((_req, res, next) => {
 });
 
 app.use(requestLogging);
+
+// A request that may have changed state is followed by a write to the database.
+// The write is queued after the response, so it never delays one.
+app.use((req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+    res.on("finish", schedulePersist);
+  }
+  next();
+});
 
 // ─── Routes ──────────────────────────────────────────────────────────
 
