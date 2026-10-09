@@ -37,8 +37,9 @@ There is no page at `/`: this is an API, so a bare visit returns a 404.
 
 | Check | URL |
 |-------|-----|
-| Service health | <https://remitcollateral-backend-production.up.railway.app/health> |
+| Service health | <https://remitcollateral-backend-production.up.railway.app/health>: `"status":"healthy"` and `"database":"ok"` |
 | Connected to the contracts? | <https://remitcollateral-backend-production.up.railway.app/api/v1/chain> — `{ "enabled": true, ... }` |
+| API description (OpenAPI) | <https://remitcollateral-backend-production.up.railway.app/api/v1/openapi.json> |
 
 It is configured with the testnet contracts documented in
 [remitcollateral-contract](https://github.com/RemitCollateral/remitcollateral-contract#testnet),
