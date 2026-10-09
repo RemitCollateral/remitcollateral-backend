@@ -44,9 +44,7 @@ It is configured with the testnet contracts documented in
 [remitcollateral-contract](https://github.com/RemitCollateral/remitcollateral-contract#testnet),
 `GRACE_PERIOD_DAYS=14` to match the ledger, and `CORS_ALLOWED_ORIGINS` set to the
 deployed frontend, <https://remitcollateral-frontend-alpha.vercel.app>. That is the
-browser origin to use; an older deployment of the frontend at
-<https://remitcollateral-frontend.vercel.app> is still on the allowlist only until it
-is retired, and no other origin is accepted.
+browser origin to use, and no other origin is accepted.
 
 What is **not** real in this deployment, so nobody mistakes it for production:
 
