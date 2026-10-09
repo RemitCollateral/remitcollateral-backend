@@ -123,6 +123,13 @@ export const config = {
     oracleSecretKey: process.env.ORACLE_SECRET_KEY || "",
     /** The off-ramp partner's Stellar address, as registered on the LoanLedger. */
     partnerAddress: process.env.PARTNER_STELLAR_ADDRESS || "",
+    /**
+     * The partner's signing key, which only a simulated partner can leave with
+     * the backend: on chain the partner co-signs each repayment attestation
+     * itself, so a real partner's key is never held here. It lets the demo
+     * partner co-sign the on-chain attestation the backend submits.
+     */
+    partnerSecretKey: process.env.PARTNER_SECRET_KEY || "",
     /** Keys the HMAC that turns phone number + KYC reference into a beneficiary's on-chain handle. */
     beneficiaryHandleSecret: process.env.BENEFICIARY_HANDLE_SECRET || "",
   },

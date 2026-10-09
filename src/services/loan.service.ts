@@ -1,4 +1,5 @@
 import { config } from "../config";
+import { logger } from "../logging/logger";
 import {
   Loan,
   InstallmentScheduleItem,
@@ -10,6 +11,7 @@ import {
   DisbursementStatus,
 } from "../types";
 import type { ChainLoan } from "../chain/soroban";
+import { activeChain, activePartnerSigner } from "../chain/runtime";
 import {
   loans,
   beneficiaries,
@@ -25,6 +27,7 @@ import { logAuditEvent } from "./audit.service";
 import * as vaultService from "./vault.service";
 import * as notifications from "./notification.service";
 import { computeAdjustedLtv, refreshReputationScore } from "./reputation.service";
+import { applyChainState } from "./loan-chain.service";
 
 // ─── Module-level adapter references ─────────────────────────────────
 
@@ -400,10 +403,37 @@ export async function processRepaymentAttestation(
     throw new Error(`Cannot process repayment for loan with status: ${loan.status}`);
   }
 
+  // The attestation must describe an installment this loan actually has, for
+  // the amount that installment is for. A genuine partner signature over the
+  // wrong figures would otherwise still release collateral.
+  const scheduled = loan.schedule.find((s) => s.installmentNumber === attestation.installment_number);
+  if (!scheduled) {
+    throw new Error(`Loan ${loan.id} has no installment ${attestation.installment_number}`);
+  }
+  if (scheduled.status === "repaid") {
+    return { loan, collateralReleased: 0 };
+  }
+  if (
+    Math.abs(attestation.amount_usd - scheduled.amountUsd) > ATTESTATION_TOLERANCE ||
+    Math.abs(attestation.amount_local - scheduled.amountLocal) > ATTESTATION_TOLERANCE
+  ) {
+    throw new Error(
+      `Attested amount does not match installment ${scheduled.installmentNumber}: ` +
+        `expected ${scheduled.amountLocal} ${loan.localCurrency} (${scheduled.amountUsd} USD)`,
+    );
+  }
+
   // Verify attestation signature via adapter
   if (offRampAdapter) {
     const valid = await offRampAdapter.verifyAttestation(attestation);
     if (!valid) throw new Error("Invalid attestation signature");
+  }
+
+  // With the contracts connected, the attestation is settled on chain first:
+  // the ledger decides what is released, and the backend records the result.
+  const chain = activeChain();
+  if (chain && loan.chainLoanId) {
+    return processChainAttestation(chain, loan, attestation, attestedBy);
   }
 
   // Record the attestation
@@ -504,6 +534,107 @@ export async function processRepaymentAttestation(
       amountUsd: attestation.amount_usd,
       collateralReleased,
       loanStatus: loan.status,
+    },
+  });
+
+  return { loan, collateralReleased };
+}
+
+/** How far an attested amount may be from the scheduled one: rounding to the cent. */
+const ATTESTATION_TOLERANCE = 0.011;
+
+/**
+ * Settle a repayment attestation on chain, then record what the chain did.
+ *
+ * The chain is asked what it has already applied before anything is sent, so
+ * a retry after a crash between "the chain accepted it" and "the backend
+ * recorded it" records the repayment rather than sending it twice. The amount
+ * sent is whatever brings the loan's cumulative repayment to the end of the
+ * installment, to the cent: the ledger counts installments from principal
+ * repaid, so equal cent-rounded installments would leave it short of the last.
+ */
+async function processChainAttestation(
+  chain: NonNullable<ReturnType<typeof activeChain>>,
+  loan: Loan,
+  attestation: OffRampAttestation,
+  attestedBy: string,
+): Promise<{ loan: Loan; collateralReleased: number }> {
+  const signPartner = activePartnerSigner();
+  if (!signPartner) {
+    throw new Error("This deployment cannot co-sign a repayment for the partner, so it cannot settle one on chain");
+  }
+
+  const loanId = BigInt(loan.chainLoanId!);
+  let onChain = await chain.loan(loanId);
+  if (!onChain) throw new Error(`Loan ${loan.chainLoanId} is not on chain`);
+  if (onChain.status !== "active" && onChain.status !== "grace") {
+    throw new Error(`Cannot process repayment for loan with status: ${onChain.status}`);
+  }
+
+  const n = attestation.installment_number;
+  let collateralReleased = 0;
+  let txHash: string | undefined;
+
+  if (onChain.installmentsPaid >= n) {
+    // The chain already counts this installment as paid.
+    logger.warn({ loanId: loan.id, installment: n }, "attestation was already applied on chain, recording it");
+  } else {
+    if (n !== onChain.installmentsPaid + 1) {
+      throw new Error(`Installment ${onChain.installmentsPaid + 1} must be repaid before installment ${n}`);
+    }
+    const principalCents = BigInt(Math.round(onChain.principalUsd * 100));
+    const repaidCents = BigInt(Math.round(onChain.totalRepaidUsd * 100));
+    const targetCents = (principalCents * BigInt(n) + BigInt(onChain.installmentCount) - 1n) / BigInt(onChain.installmentCount);
+    const amount = Number(targetCents - repaidCents) / 100;
+    if (Math.abs(amount - attestation.amount_usd) > ATTESTATION_TOLERANCE) {
+      throw new Error(`The ledger expects ${amount} USD for installment ${n}, not ${attestation.amount_usd}`);
+    }
+
+    const result = await chain.attestRepayment({
+      partner: onChain.partner,
+      loanId,
+      amountUsd: amount,
+      signPartnerAuthEntry: signPartner,
+    });
+    collateralReleased = result.releasedUsd;
+    txHash = result.hash;
+  }
+
+  repaymentAttestations.push({
+    id: generateId(),
+    loanId: attestation.loan_id,
+    installmentNumber: n,
+    amountLocal: attestation.amount_local,
+    amountUsd: attestation.amount_usd,
+    attestedBy,
+    partnerSignature: attestation.partner_signature,
+    attestedAt: attestation.attested_at,
+    createdAt: new Date().toISOString(),
+  });
+
+  // The backend's loan now follows the chain's, not its own arithmetic.
+  onChain = (await chain.loan(loanId)) ?? onChain;
+  applyChainState(loan, onChain, attestation.attested_at);
+
+  refreshReputationScore(loan.beneficiaryId);
+  if (loan.status === "repaid") {
+    const beneficiary = beneficiaries.get(loan.beneficiaryId);
+    if (beneficiary) notifications.notifyLoanRepaid(loan, beneficiary);
+  }
+
+  logAuditEvent({
+    eventType: "REPAYMENT",
+    action: "ATTESTATION_PROCESSED",
+    entityType: "loan",
+    entityId: loan.id,
+    details: {
+      installmentNumber: n,
+      amountLocal: attestation.amount_local,
+      amountUsd: attestation.amount_usd,
+      collateralReleased,
+      loanStatus: loan.status,
+      chainLoanId: loan.chainLoanId,
+      txHash,
     },
   });
 

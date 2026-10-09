@@ -300,7 +300,7 @@ export const openApiDocument = {
       get: { summary: "Repayment history for a loan", security: [bearerAuth], parameters: [{ name: "loanId", in: "path", required: true, schema: { type: "string" } }], responses: { "200": { description: "List", content: { "application/json": { schema: { type: "array", items: { $ref: "#/components/schemas/Attestation" } } } } } } },
     },
     "/repayments/attest": {
-      post: { summary: "Submit a signed repayment attestation. Idempotent per (loanId, installmentNumber).", security: [apiKeyAuth], responses: { "200": { description: "Processed" }, "400": errorResponse, "429": errorResponse } },
+      post: { summary: "Submit a repayment attestation signed by the partner's registered Stellar key. Idempotent per (loanId, installmentNumber). Settled on chain when the contracts are connected.", security: [apiKeyAuth], responses: { "200": { description: "Processed" }, "400": errorResponse, "429": errorResponse } },
     },
     "/remittances": {
       get: { summary: "List remittances for the authenticated guarantor", security: [bearerAuth], responses: { "200": { description: "List", content: { "application/json": { schema: { type: "array", items: { $ref: "#/components/schemas/Remittance" } } } } } } },

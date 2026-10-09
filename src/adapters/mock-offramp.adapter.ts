@@ -8,6 +8,7 @@ import {
 } from "../types";
 import { logger } from "../logging/logger";
 import { config } from "../config";
+import { verifyPartnerSignature } from "../chain/attestation";
 
 const log = logger.child({ component: "mock-offramp" });
 
@@ -25,7 +26,9 @@ export const INDICATIVE_RATES: Record<string, number> = {
  *
  * For development and testing. Simulates partner behavior:
  * - disburse() always succeeds after 500ms delay
- * - verifyAttestation() accepts any non-empty signature
+ * - verifyAttestation() checks the signature against the partner's registered
+ *   Stellar key (PARTNER_STELLAR_ADDRESS). With no key configured it accepts any
+ *   non-empty signature outside production and refuses everything in production
  * - getDisbursementStatus() returns success for known references
  * - fetchRemittanceHistory() returns configurable seed data
  * - getExchangeRate() quotes fixed indicative rates for the currencies above
@@ -59,8 +62,21 @@ export class MockOffRampAdapter implements OffRampAdapter {
   }
 
   async verifyAttestation(attestation: OffRampAttestation): Promise<boolean> {
-    // Accept any attestation where partner_signature is non-empty
-    const valid = !!attestation.partner_signature && attestation.partner_signature.length > 0;
+    const partnerAddress = config.chain.partnerAddress;
+    let valid: boolean;
+
+    if (partnerAddress) {
+      // The signature must be the registered partner's, over exactly these figures.
+      valid = verifyPartnerSignature(partnerAddress, attestation);
+    } else if (process.env.NODE_ENV === "production") {
+      // No key to check against: refuse, rather than let a missing setting turn
+      // the check into a rubber stamp.
+      log.error("PARTNER_STELLAR_ADDRESS is not set, so no attestation can be verified");
+      valid = false;
+    } else {
+      // Local development with no partner key configured.
+      valid = !!attestation.partner_signature && attestation.partner_signature.length > 0;
+    }
 
     log.info(
       { loanId: attestation.loan_id, installmentNumber: attestation.installment_number, valid },

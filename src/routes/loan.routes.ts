@@ -8,6 +8,7 @@ import { loanView, loanViewsFor } from "../api/loan-views";
 import { paginate } from "../api/pagination";
 import { validateBody } from "../api/validate";
 import { linkOf } from "../services/beneficiary.service";
+import { reconcileLoan, reconcileLoans } from "../services/loan-chain.service";
 import { activeChain } from "../chain/runtime";
 import { ChainError } from "../chain/errors";
 import { config } from "../config";
@@ -168,11 +169,14 @@ loanRouter.post("/submit", walletAuth, async (req: Request, res: Response) => {
 /**
  * GET /loans — Every loan the guarantor's collateral backs, most urgent first.
  */
-loanRouter.get("/", walletAuth, (req: Request, res: Response) => {
+loanRouter.get("/", walletAuth, async (req: Request, res: Response) => {
   const guarantorId = (req as any).guarantorId as string;
   if (!guarantorId) {
     return res.status(404).json({ error: "Guarantor not found. Register first." });
   }
+
+  // With the contracts connected the chain is the authority on each loan's state.
+  await reconcileLoans(Array.from(loans.values()).filter((l) => l.guarantorId === guarantorId));
 
   const { status, limit, offset } = req.query;
   const views = loanViewsFor(guarantorId);
@@ -184,23 +188,25 @@ loanRouter.get("/", walletAuth, (req: Request, res: Response) => {
 /**
  * GET /loans/:id — A loan with its beneficiary and repayment figures.
  */
-loanRouter.get("/:id", walletAuth, (req: Request, res: Response) => {
+loanRouter.get("/:id", walletAuth, async (req: Request, res: Response) => {
   const loan = loans.get(req.params.id);
   if (!loan || loan.guarantorId !== (req as any).guarantorId) {
     // Not distinguished from "not found": telling a caller that a loan
     // exists but belongs to someone else leaks that it exists at all.
     return res.status(404).json({ error: "Loan not found" });
   }
+  await reconcileLoan(loan);
   return res.json(loanView(loan));
 });
 
 /**
  * GET /loans/:id/schedule — The installment schedule with payment status.
  */
-loanRouter.get("/:id/schedule", walletAuth, (req: Request, res: Response) => {
+loanRouter.get("/:id/schedule", walletAuth, async (req: Request, res: Response) => {
   const loan = loans.get(req.params.id);
   if (!loan || loan.guarantorId !== (req as any).guarantorId) {
     return res.status(404).json({ error: "Loan not found" });
   }
+  await reconcileLoan(loan);
   return res.json(serializeSchedule(loan.schedule));
 });

@@ -49,8 +49,10 @@ browser origin to use, and no other origin is accepted.
 What is **not** real in this deployment, so nobody mistakes it for production:
 
 - The off-ramp partner is `MockOffRampAdapter`: disbursements are simulated, no
-  money moves, and exchange rates are fixed. `verifyAttestation` accepts any
-  non-empty signature. It does **not** invent remittance history: a new
+  money moves, and exchange rates are fixed. `verifyAttestation` checks the
+  signature against the partner's registered Stellar key, but nothing checks the
+  repayment against a partner's own records, because there is no partner to ask.
+  It does **not** invent remittance history: a new
   beneficiary starts at zero reputation and the full base LTV
   (`MOCK_PARTNER_SEED_HISTORY` is off), checked against the live service.
 - Repayments and liquidation update only the backend's own records; they are not
@@ -191,6 +193,7 @@ The backend acts on chain in exactly three roles, and holds no contract admin ke
 | Role | Key | What the backend does with it |
 |------|-----|-------------------------------|
 | Verifier | `VERIFIER_SECRET_KEY` | Co-signs each repayment attestation with the off-ramp partner, and pays the fees for the permissionless liquidation cranks |
+| Simulated partner | `PARTNER_SECRET_KEY` | Signs the partner's half of each on-chain attestation. Only a simulated partner can leave this key with the backend: it must be the key of `PARTNER_STELLAR_ADDRESS`, and a real partner's key must never be here |
 | Oracle | `ORACLE_SECRET_KEY` | Publishes each beneficiary's reputation score, which sets the LTV their loans need |
 | — | `BENEFICIARY_HANDLE_SECRET` | Keys the HMAC that derives a beneficiary's on-chain handle from their phone number and KYC reference |
 
@@ -206,7 +209,28 @@ A beneficiary's handle is an HMAC rather than a plain hash because everything on
 
 A prepared transaction is valid for five minutes, only for the guarantor it was prepared for, and only if the signed envelope is exactly what was prepared. Without the contracts configured, `POST /vaults/deposit` and `/withdraw` record collateral in the backend's own accounting, as before. Loans follow the same pattern: `POST /api/v1/loans/prepare` prices the loan at the partner's rate and returns the origination to sign, and `POST /api/v1/loans/submit` sends it, records the loan against its on-chain ID, and has the partner disburse it. Before preparing, the backend publishes the beneficiary's reputation if the chain's copy is out of date, so the collateral the ledger locks is the collateral the backend quoted.
 
-> **Not yet on chain: repayments and liquidation.** With the contracts connected, `POST /repayments/attest` still updates only the backend's own records, so no collateral is released on chain, and the lifecycle sweep moves overdue loans into grace and default locally rather than through the LiquidationEngine's cranks. The chain client already implements both — co-signed attestations and the cranks — but the services do not use them yet. Do not run with the contracts connected for real users until they do.
+#### Repayments and liquidation on chain
+
+With the contracts connected, repayments and the lifecycle go through the ledger and the engine, and the backend's records follow the chain's:
+
+- **Repayments.** `POST /repayments/attest` first checks the attestation against the loan's schedule (the installment exists and the amounts are its amounts), then checks the partner's signature (see below), then has the ledger record it with `attest_repayment`, co-signed by the partner and the verifier. The ledger decides what collateral to release, and the backend adopts that. Installments must be repaid in order. The amount sent is whatever brings the loan's cumulative repayment to the end of that installment, to the cent, so the ledger's own count agrees with the schedule. Before sending, the backend asks the ledger what it has already applied, so a retry after a crash records the repayment rather than sending it twice. If the chain call fails, nothing is recorded and the partner may retry.
+- **Lifecycle.** For a loan on chain, the sweep follows the ledger's dates, not its own: when the ledger says the next installment is overdue it calls the engine's `flag_overdue`, and when grace has run out it calls `liquidate`. Both cranks are permissionless and paid for by the verifier key, and a loan that needs neither is left alone, so the sweep is safe to repeat. If the backend's clock is ahead of the chain's, the sweep waits until the ledger agrees.
+- **The chain is authoritative.** `GET /loans`, `GET /loans/:id` and the sweep read each loan's status, collateral released, grace deadline and paid installments from chain. Any difference the backend did not itself cause is recorded as a `LOAN_CHAIN_DRIFT` audit event, and the chain's value wins.
+
+**Partner signatures.** A partner signs each attestation with the Stellar key registered for it (`PARTNER_STELLAR_ADDRESS`): an ed25519 signature, base64, over
+
+```
+RemitCollateral repayment attestation v1
+loan: <loanId>
+installment: <n>
+amount_local: <to 2 decimals>
+amount_usd: <to 2 decimals>
+attested_at: <the attestedAt string sent>
+```
+
+so a signature cannot be reused for another loan, installment or amount. `npm run attest -- <loanId> <installment> <amountLocal> <amountUsd>` signs and sends one for the simulated partner (it needs `PARTNER_SECRET_KEY`, `PARTNER_API_KEY` and `API_URL`). With no `PARTNER_STELLAR_ADDRESS` set, a non-production run accepts any non-empty signature, as local development always did, and production refuses every attestation.
+
+What is still not real: no partner's own records back the attestation, because the partner is simulated (see [#28](https://github.com/RemitCollateral/remitcollateral-backend/issues/28)), and a real partner would co-sign its half of the transaction itself rather than leave a key here ([#19](https://github.com/RemitCollateral/remitcollateral-backend/issues/19)).
 
 The contracts cannot cancel a loan whose disbursement fails after its collateral is locked. Such a failure is recorded and audited as `LOAN_DISBURSEMENT_FAILED` for an operator to resolve.
 
@@ -365,6 +389,8 @@ A beneficiary is one person, however many guarantors support them. Adding a phon
 | `GET` | `/api/v1/loans/:id/repayments` | Wallet | Repayment history for a loan |
 
 `POST /repayments/attest` is rate limited by the presented `x-api-key` (`REPAYMENT_ATTEST_RATE_LIMIT_MAX` per `REPAYMENT_ATTEST_RATE_LIMIT_WINDOW_MINUTES`, default 60 per minute), falling back to IP for requests with no key at all.
+
+Its body is `{ loanId, installmentNumber, amountLocal, amountUsd, attestedAt, partnerSignature }`, where `partnerSignature` is the partner's signature described under [Repayments and liquidation on chain](#repayments-and-liquidation-on-chain). The amounts must be the installment's own.
 
 It is also idempotent per `(loanId, installmentNumber)`: a partner retrying an attestation it never saw a response for — rather than a genuinely new installment — gets the same loan back with `collateralReleased: 0`, without a second attestation record or a second contract-gateway call.
 

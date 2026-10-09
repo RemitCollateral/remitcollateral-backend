@@ -9,6 +9,7 @@
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "test": "NODE_ENV=test node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
+    "attest": "tsx scripts/attest.ts",
     "test:chain": "NODE_ENV=test node --import tsx --test \"src/**/*.chain-test.ts\"",
     "test:load": "NODE_ENV=test node --import tsx --test \"src/**/*.load-test.ts\""
   },

@@ -25,8 +25,8 @@ import { fxRouter } from "./routes/fx.routes";
 import { chainRouter } from "./routes/chain.routes";
 import { openApiRouter } from "./routes/openapi.routes";
 import { config } from "./config";
-import { chainFromConfig } from "./chain";
-import { setChain } from "./chain/runtime";
+import { chainFromConfig, partnerSignerFromConfig } from "./chain";
+import { setChain, setPartnerSigner } from "./chain/runtime";
 import { requestLogging } from "./middleware/request-logging.middleware";
 import { logger } from "./logging/logger";
 import { schedulePersist } from "./persistence";
@@ -62,6 +62,7 @@ if (chainClient && !config.chain.partnerAddress) {
   throw new Error("PARTNER_STELLAR_ADDRESS must be set when the contracts are configured");
 }
 setChain(chainClient);
+setPartnerSigner(chainClient ? partnerSignerFromConfig() : null);
 
 // ─── Middleware ───────────────────────────────────────────────────────
 
