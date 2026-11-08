@@ -1,0 +1,78 @@
+# Render Blueprint: the backend and its PostgreSQL database.
+# In Render: New > Blueprint > pick this repository. Render will ask for the three
+# values marked "sync: false" below; everything else is filled in.
+#
+# Free-plan limits worth knowing (see README, "Deploying to Render"):
+#  - a free web service sleeps after 15 minutes without traffic and takes a while to wake
+#  - a free PostgreSQL database expires 30 days after it is created
+
+services:
+  - type: web
+    name: remitcollateral-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: frankfurt
+    branch: main
+    autoDeploy: true
+    # Cheap and needs neither the database nor the RPC, so a brief outage of either
+    # does not make Render restart a healthy process.
+    healthCheckPath: /api/v1/chain
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: STELLAR_NETWORK
+        value: testnet
+      - key: STELLAR_RPC_URL
+        value: https://soroban-testnet.stellar.org
+      # Render sits behind one proxy; without this every visitor shares one rate-limit bucket.
+      - key: TRUST_PROXY
+        value: "1"
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://remitcollateral-frontend-alpha.vercel.app
+      - key: DATABASE_URL
+        fromDatabase:
+          name: remitcollateral-db
+          property: connectionString
+
+      # The deployed testnet contracts (Circle USDC). See the contract repository's README.
+      - key: GUARANTOR_VAULT_CONTRACT_ID
+        value: CBTD4XTWHWWZGIR73YEABQ27VAFPM2F2VD2HAUVQL4GBG72UQAUDYCCV
+      - key: LOAN_LEDGER_CONTRACT_ID
+        value: CCQNUDRVK7WPQZP2ISTSBMPTGBT2VNULEPFHCSLUCVLVINW5T6LSVR2V
+      - key: LIQUIDATION_ENGINE_CONTRACT_ID
+        value: CBKBE27LZRCV6CXJPGGO5M373XMVMX3EUABD7JN6C764DZNRMJNRCJKE
+      - key: SETTLEMENT_ADDRESS
+        value: GAFDAOJ6UE3VIJ43W6WEW6D6T3MVDE5PISA74AS7AEIJE4KURQAJ7VMT
+      - key: GRACE_PERIOD_DAYS
+        value: "14"
+      - key: PARTNER_STELLAR_ADDRESS
+        value: GC26UMM7ICTUPT5DDJPQS6BM7Q4TJ2K7QCY4LMIQE5ETI7VDBJCPPE6R
+      - key: ADMIN_WALLET_ADDRESS
+        value: GDRLPQ7UAJW4KH6RXXAFWHL64OZDQ3RTLMJDPIKI45KKFRESVVG3CHA4
+      - key: MOCK_PARTNER_SEED_HISTORY
+        value: "false"
+
+      # Secrets Render generates once and keeps.
+      - key: PARTNER_API_KEY
+        generateValue: true
+      - key: BENEFICIARY_HANDLE_SECRET
+        generateValue: true
+
+      # Secrets you enter in the dashboard. These are the testnet identities registered
+      # on the ledger (rc-verifier, rc-oracle, rc-partner); never commit them.
+      - key: VERIFIER_SECRET_KEY
+        sync: false
+      - key: ORACLE_SECRET_KEY
+        sync: false
+      - key: PARTNER_SECRET_KEY
+        sync: false
+
+databases:
+  - name: remitcollateral-db
+    plan: free
+    region: frankfurt
+    databaseName: remit
+    user: remit
+    # Reachable only from Render services in the same region, not from the internet.
+    ipAllowList: []
