@@ -32,14 +32,15 @@ The backend API serves as the orchestration layer between the frontend, Soroban 
 
 ## Live deployment (Stellar testnet)
 
-**<https://remitcollateral-backend-production.up.railway.app>**, deployed on Railway.
-There is no page at `/`: this is an API, so a bare visit returns a 404.
+**<https://remitcollateral-backend.onrender.com>**, deployed on Render's free plan.
+There is no page at `/`: this is an API, so a bare visit returns a 404. The free plan puts the service to sleep after
+15 minutes without traffic, so the first request after a quiet spell can take up to a minute while it wakes.
 
 | Check | URL |
 |-------|-----|
-| Service health | <https://remitcollateral-backend-production.up.railway.app/health>: `"status":"healthy"` and `"database":"ok"` |
-| Connected to the contracts? | <https://remitcollateral-backend-production.up.railway.app/api/v1/chain> — `{ "enabled": true, ... }` |
-| API description (OpenAPI) | <https://remitcollateral-backend-production.up.railway.app/api/v1/openapi.json> |
+| Service health | <https://remitcollateral-backend.onrender.com/health>: `"status":"healthy"` and `"database":"ok"` |
+| Connected to the contracts? | <https://remitcollateral-backend.onrender.com/api/v1/chain> — `{ "enabled": true, ... }` |
+| API description (OpenAPI) | <https://remitcollateral-backend.onrender.com/api/v1/openapi.json> |
 
 It is configured with the testnet contracts documented in
 [remitcollateral-contract](https://github.com/RemitCollateral/remitcollateral-contract#testnet),
@@ -138,7 +139,7 @@ PORT=4000
 STELLAR_NETWORK=testnet
 STELLAR_RPC_URL=https://soroban-testnet.stellar.org
 
-# Reverse proxies in front of the service (Railway is 1). Without it every
+# Reverse proxies in front of the service (Render and Railway are each 1). Without it every
 # visitor shares the proxy's IP and so one rate-limit budget. Leave 0 when the
 # service is reached directly.
 TRUST_PROXY=0
