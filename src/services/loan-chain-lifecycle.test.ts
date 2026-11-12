@@ -265,6 +265,24 @@ test("the sweep waits for the ledger to call a loan overdue, even if the backend
   assert.equal(loan.status, "active");
 });
 
+test("the schedule's due dates are the ledger's, across a daylight saving change", async () => {
+  const savedTz = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  // New York leaves daylight saving time on 2026-11-01, inside the first installment.
+  chainNow = Date.parse("2026-10-15T12:00:00Z");
+  try {
+    const { loan, chainId } = await newLoan();
+    const { originatedAt, intervalSecs } = onChain.get(chainId)!;
+    assert.deepEqual(
+      loan.schedule.map((s) => s.dueAt),
+      [1, 2, 3].map((n) => new Date(originatedAt.getTime() + n * intervalSecs * 1000).toISOString()),
+    );
+  } finally {
+    if (savedTz === undefined) delete process.env.TZ;
+    else process.env.TZ = savedTz;
+  }
+});
+
 test("a difference between the chain and the backend is audited and the chain wins", async () => {
   const { loan, chainId } = await newLoan();
   const chainLoan = onChain.get(chainId)!;

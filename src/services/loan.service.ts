@@ -655,8 +655,7 @@ function generateInstallmentSchedule(
   const schedule: InstallmentScheduleItem[] = [];
 
   for (let i = 1; i <= count; i++) {
-    const dueDate = new Date(start);
-    dueDate.setDate(dueDate.getDate() + intervalDays * i);
+    const dueDate = new Date(start.getTime() + intervalDays * i * 24 * 60 * 60 * 1000);
 
     schedule.push({
       installmentNumber: i,
